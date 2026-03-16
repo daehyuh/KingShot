@@ -1,0 +1,17 @@
+[Unit]
+Description=Kingshot Swordland Showdown Manager
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/kingshot
+Environment=PYTHONUNBUFFERED=1
+Environment=KINGSHOT_API_SECRET=mN4!pQs6JrYwV9
+ExecStart=/home/ubuntu/.local/bin/uv run server.py --host 127.0.0.1 --port 8000 --db /opt/kingshot/alliance_users.db
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

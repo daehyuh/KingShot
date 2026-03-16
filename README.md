@@ -55,3 +55,18 @@ Default DB file:
 ## CORS
 
 API responses include `Access-Control-Allow-Origin: *`.
+
+## Ubuntu Deploy
+
+Use the deployment guide:
+
+- `deploy/ubuntu/DEPLOY.md`
+
+Templates:
+
+- `deploy/ubuntu/kingshot.service`
+- `deploy/ubuntu/nginx-kingshot.conf`
+
+Optional env var:
+
+- `KINGSHOT_API_SECRET` (defaults to the current built-in value if not set)

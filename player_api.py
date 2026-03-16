@@ -1,10 +1,11 @@
 import hashlib
 import json
+import os
 import time
 from urllib import error, request
 
 API_URL = "https://kingshot-giftcode.centurygame.com/api/player"
-SECRET = "mN4!pQs6JrYwV9"
+SECRET = os.getenv("KINGSHOT_API_SECRET", "mN4!pQs6JrYwV9")
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 BASE_BACKOFF_SECONDS = 0.8
 MAX_BACKOFF_SECONDS = 8.0
