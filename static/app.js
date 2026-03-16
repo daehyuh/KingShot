@@ -447,7 +447,7 @@ async function copyText(text) {
 
 function buildLegionCopyText(title, users) {
   const names = users.map((user) => normalizeNameForCopy(user))
-  return `${title}\n- ${names.join(", ")}`
+  return `${title}:-\n${names.join(", ")}`
 }
 
 async function copyLegionList(legionKey) {
@@ -458,7 +458,7 @@ async function copyLegionList(legionKey) {
   }
 
   const users = legionKey === "legion1" ? state.board.legion1 : state.board.legion2
-  const title = legionKey === "legion1" ? "Legion1" : "Legion2"
+  const title = legionKey === "legion1" ? "legion 1" : "legion 2"
 
   if (!users || users.length === 0) {
     setStatus(`${title} has no members to copy.`, "error")
