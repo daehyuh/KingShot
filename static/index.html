@@ -18,78 +18,44 @@
 
     <section class="grid">
       <section class="panel">
-        <div class="panel-head">
-          <h2>Member Registration</h2>
-        </div>
-
-        <label class="label" for="singleFid">Add one user by FID</label>
-        <div class="inline-row">
-          <input id="singleFid" type="number" min="1" placeholder="e.g. 254813172" />
-          <button id="addSingleBtn" class="btn primary">Add</button>
-        </div>
-
-        <label class="label" for="bulkFids">Add multiple users (comma/newline)</label>
-        <textarea id="bulkFids" rows="4" placeholder="254813172, 111111111, 222222222"></textarea>
-        <div class="inline-row right">
-          <button id="addBulkBtn" class="btn">Bulk Add</button>
-        </div>
-        <div id="bulkProgress" class="bulk-progress hidden">
-          <div class="bulk-progress-head">
-            <span id="bulkProgressText">0/0</span>
-            <span id="bulkProgressMeta">Waiting 0</span>
-          </div>
-          <div class="bulk-progress-track">
-            <div id="bulkProgressFill" class="bulk-progress-fill"></div>
-          </div>
-          <p id="bulkProgressDetail" class="bulk-progress-detail">Queue idle.</p>
-        </div>
-
-        <div class="split-line"></div>
-
-        <div class="panel-head">
-          <h3>Registered Members</h3>
-          <div class="inline-row">
-            <button id="toggleRegisteredBtn" class="btn ghost sm">Expand</button>
-            <button id="refreshBtn" class="btn ghost sm">Refresh</button>
+        <div class="panel-head registered-head">
+          <h3 class="registered-title">Registered Members</h3>
+          <div class="inline-row registered-actions">
+            <button id="openMemberModalBtn" class="btn primary sm" type="button">Add User</button>
           </div>
         </div>
-        <div id="registeredUsersWrap" class="registered-wrap hidden">
+        <label class="label" for="registeredSearchInput">Search Registered Members</label>
+        <input id="registeredSearchInput" type="text" placeholder="Search by nickname or FID" />
+        <p class="meta search-meta">Only filters Registered Members.</p>
+        <div id="registeredUsersWrap" class="registered-wrap">
           <div id="registeredUsers" class="stack"></div>
+        </div>
+        <div class="inline-row right">
+          <button id="refreshBtn" class="btn ghost sm">Refresh</button>
         </div>
       </section>
 
       <section class="panel">
-        <div class="panel-head">
+        <div class="panel-head event-head">
           <h2>Event Setup</h2>
+          <button id="openEventModalBtn" class="btn primary sm" type="button">Add Event</button>
         </div>
 
-        <label class="label" for="eventNameInput">Create event</label>
-        <div class="inline-row">
-          <input id="eventNameInput" type="text" maxlength="120" placeholder="Swordland Showdown #1" />
-          <button id="createEventBtn" class="btn primary">Create</button>
+        <div class="panel-head compact event-board-meta">
+          <h3 id="boardTitle">No event selected</h3>
+          <p id="boardMeta" class="meta">Create an event to start team assignment.</p>
         </div>
 
         <label class="label" for="eventSelect">Select event</label>
-        <div class="inline-row">
+        <div class="inline-row event-select-row">
           <select id="eventSelect"></select>
-          <button id="deleteEventBtn" class="btn danger">Delete</button>
-        </div>
-
-        <div class="inline-row right">
-          <button id="clearLegion1Btn" class="btn">Clear Legion 1</button>
-          <button id="clearLegion2Btn" class="btn">Clear Legion 2</button>
         </div>
 
         <label class="label" for="memberSearchInput">Member Search</label>
         <input id="memberSearchInput" type="text" placeholder="Nickname/FID (comma separated)" />
-        <p class="meta">Supports multiple search terms: XeneosX, ouall, Korea</p>
+        <p class="meta search-meta">Filters Unassigned, Legion 1, and Legion 2. Supports multiple terms.</p>
 
         <div class="split-line"></div>
-
-        <div class="panel-head compact">
-          <h3 id="boardTitle">No event selected</h3>
-          <p id="boardMeta" class="meta">Create an event to start team assignment.</p>
-        </div>
 
         <section class="board-grid">
           <article class="column">
@@ -122,9 +88,69 @@
             <div id="legion2List" class="stack"></div>
           </article>
         </section>
+
+        <div class="split-line"></div>
+
+        <div class="inline-row right">
+          <button id="clearLegion1Btn" class="btn">Clear Legion 1</button>
+          <button id="clearLegion2Btn" class="btn">Clear Legion 2</button>
+        </div>
+        <div class="inline-row right">
+          <button id="deleteEventBtn" class="btn danger">Delete Event</button>
+        </div>
       </section>
     </section>
   </main>
+
+  <div id="memberRegModal" class="modal hidden" aria-hidden="true">
+    <div class="modal-backdrop" data-close-modal="true"></div>
+    <section class="modal-dialog panel" role="dialog" aria-modal="true" aria-labelledby="memberRegModalTitle">
+      <div class="panel-head">
+        <h2 id="memberRegModalTitle">Member Registration</h2>
+        <button id="closeMemberModalBtn" class="btn ghost sm" type="button">Close</button>
+      </div>
+
+      <label class="label" for="singleFid">Add one user by FID</label>
+      <input id="singleFid" type="number" min="1" placeholder="e.g. 254813172" />
+      <div class="inline-row right">
+        <button id="addSingleBtn" class="btn primary">Add</button>
+      </div>
+
+      <label class="label" for="bulkFids">Add multiple users (comma/newline)</label>
+      <textarea id="bulkFids" rows="4" placeholder="254813172, 111111111, 222222222"></textarea>
+      <div class="inline-row right">
+        <button id="addBulkBtn" class="btn">Bulk Add</button>
+      </div>
+      <div id="bulkProgress" class="bulk-progress hidden">
+        <div class="bulk-progress-head">
+          <span id="bulkProgressText">0/0</span>
+          <span id="bulkProgressMeta">Waiting 0</span>
+        </div>
+        <div class="bulk-progress-track">
+          <div id="bulkProgressFill" class="bulk-progress-fill"></div>
+        </div>
+        <p id="bulkProgressDetail" class="bulk-progress-detail">Queue idle.</p>
+      </div>
+    </section>
+  </div>
+
+  <div id="eventCreateModal" class="modal hidden" aria-hidden="true">
+    <div class="modal-backdrop" data-close-event-modal="true"></div>
+    <section class="modal-dialog panel" role="dialog" aria-modal="true" aria-labelledby="eventCreateModalTitle">
+      <div class="panel-head">
+        <h2 id="eventCreateModalTitle">Create Event</h2>
+        <button id="closeEventModalBtn" class="btn ghost sm" type="button">Close</button>
+      </div>
+
+      <label class="label" for="eventNameInput">Create event</label>
+      <input id="eventNameInput" type="text" maxlength="120" placeholder="Swordland Showdown #1" />
+      <div class="inline-row right">
+        <button id="createEventBtn" class="btn primary">Create</button>
+      </div>
+    </section>
+  </div>
+
+  <div id="copyToast" class="copy-toast" role="status" aria-live="polite"></div>
 
   <script src="/static/app.js"></script>
 </body>

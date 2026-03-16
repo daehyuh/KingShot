@@ -3,12 +3,19 @@
   events: [],
   currentEventId: null,
   board: null,
-  registeredCollapsed: true,
-  memberSearch: "",
+  registeredSearch: "",
+  boardSearch: "",
 }
 
 const el = {
   statusBar: document.getElementById("statusBar"),
+  copyToast: document.getElementById("copyToast"),
+  memberRegModal: document.getElementById("memberRegModal"),
+  openMemberModalBtn: document.getElementById("openMemberModalBtn"),
+  closeMemberModalBtn: document.getElementById("closeMemberModalBtn"),
+  eventCreateModal: document.getElementById("eventCreateModal"),
+  openEventModalBtn: document.getElementById("openEventModalBtn"),
+  closeEventModalBtn: document.getElementById("closeEventModalBtn"),
   singleFid: document.getElementById("singleFid"),
   bulkFids: document.getElementById("bulkFids"),
   bulkProgress: document.getElementById("bulkProgress"),
@@ -18,10 +25,10 @@ const el = {
   bulkProgressDetail: document.getElementById("bulkProgressDetail"),
   addSingleBtn: document.getElementById("addSingleBtn"),
   addBulkBtn: document.getElementById("addBulkBtn"),
-  toggleRegisteredBtn: document.getElementById("toggleRegisteredBtn"),
   refreshBtn: document.getElementById("refreshBtn"),
   registeredUsersWrap: document.getElementById("registeredUsersWrap"),
   registeredUsers: document.getElementById("registeredUsers"),
+  registeredSearchInput: document.getElementById("registeredSearchInput"),
   memberSearchInput: document.getElementById("memberSearchInput"),
   eventNameInput: document.getElementById("eventNameInput"),
   createEventBtn: document.getElementById("createEventBtn"),
@@ -41,6 +48,8 @@ const el = {
   legion2List: document.getElementById("legion2List"),
 }
 
+let copyToastTimer = null
+
 function setStatus(message, type = "info") {
   if (!el.statusBar) {
     return
@@ -49,20 +58,69 @@ function setStatus(message, type = "info") {
   el.statusBar.dataset.type = type
 }
 
-function setRegisteredCollapsed(collapsed) {
-  state.registeredCollapsed = !!collapsed
-
-  if (!el.registeredUsersWrap || !el.toggleRegisteredBtn) {
+function showCopyToast(message, type = "success") {
+  if (!el.copyToast) {
     return
   }
 
-  if (state.registeredCollapsed) {
-    el.registeredUsersWrap.classList.add("hidden")
-    el.toggleRegisteredBtn.textContent = "Expand"
-  } else {
-    el.registeredUsersWrap.classList.remove("hidden")
-    el.toggleRegisteredBtn.textContent = "Collapse"
+  el.copyToast.textContent = safeText(message, "")
+  el.copyToast.classList.remove("success", "error")
+  el.copyToast.classList.add(type === "error" ? "error" : "success")
+  el.copyToast.classList.add("show")
+
+  if (copyToastTimer) {
+    window.clearTimeout(copyToastTimer)
   }
+
+  copyToastTimer = window.setTimeout(() => {
+    el.copyToast?.classList.remove("show")
+  }, 1600)
+}
+
+function syncBodyModalState() {
+  const memberOpen = !!el.memberRegModal && !el.memberRegModal.classList.contains("hidden")
+  const eventOpen = !!el.eventCreateModal && !el.eventCreateModal.classList.contains("hidden")
+
+  if (memberOpen || eventOpen) {
+    document.body.classList.add("modal-open")
+    return
+  }
+
+  document.body.classList.remove("modal-open")
+}
+
+function setMemberModalOpen(isOpen) {
+  if (!el.memberRegModal) {
+    return
+  }
+
+  if (isOpen) {
+    el.memberRegModal.classList.remove("hidden")
+    el.memberRegModal.setAttribute("aria-hidden", "false")
+    syncBodyModalState()
+    return
+  }
+
+  el.memberRegModal.classList.add("hidden")
+  el.memberRegModal.setAttribute("aria-hidden", "true")
+  syncBodyModalState()
+}
+
+function setEventModalOpen(isOpen) {
+  if (!el.eventCreateModal) {
+    return
+  }
+
+  if (isOpen) {
+    el.eventCreateModal.classList.remove("hidden")
+    el.eventCreateModal.setAttribute("aria-hidden", "false")
+    syncBodyModalState()
+    return
+  }
+
+  el.eventCreateModal.classList.add("hidden")
+  el.eventCreateModal.setAttribute("aria-hidden", "true")
+  syncBodyModalState()
 }
 
 function setBulkProgress({
@@ -161,13 +219,77 @@ function normalizeMemberName(value) {
     .trim()
 }
 
+function getMemberAvatar(user) {
+  if (!user || typeof user !== "object") {
+    return ""
+  }
+
+  const candidate = safeText(
+    user.avatar_image ?? user.avatar ?? user.image ?? "",
+    ""
+  ).trim()
+
+  if (!candidate) {
+    return ""
+  }
+
+  if (!/^https?:\/\//i.test(candidate)) {
+    return ""
+  }
+
+  return candidate
+}
+
+function getAvatarFallbackText(user) {
+  const normalizedName = normalizeMemberName(getMemberNickname(user)).replace(/\s+/g, "")
+  if (normalizedName) {
+    return normalizedName.slice(0, 2).toUpperCase()
+  }
+
+  const fidText = safeText(user?.fid, "").trim()
+  if (fidText) {
+    return fidText.slice(-2)
+  }
+
+  return "?"
+}
+
+function createAvatarElement(user, sizeClass = "md") {
+  const wrapper = document.createElement("div")
+  wrapper.className = `avatar ${sizeClass}`.trim()
+
+  const fallback = document.createElement("span")
+  fallback.className = "avatar-fallback"
+  fallback.textContent = getAvatarFallbackText(user)
+
+  const avatarUrl = getMemberAvatar(user)
+  if (avatarUrl) {
+    const image = document.createElement("img")
+    image.src = avatarUrl
+    image.alt = `${safeText(getMemberNickname(user), "Unknown")} avatar`
+    image.loading = "lazy"
+    image.decoding = "async"
+    image.referrerPolicy = "no-referrer"
+    image.addEventListener("load", () => {
+      wrapper.classList.add("loaded")
+    })
+    image.addEventListener("error", () => {
+      image.remove()
+    })
+    wrapper.appendChild(image)
+  }
+
+  wrapper.appendChild(fallback)
+  return wrapper
+}
+
 function normalizeSearchText(value) {
   return normalizeMemberName(value)
     .toLowerCase()
 }
 
-function getSearchTerms() {
-  const raw = safeText(state.memberSearch, "")
+function getSearchTerms(rawInput = "") {
+  const raw = safeText(rawInput, "")
     .normalize("NFKC")
     .replace(/[\u00A0\u1680\u2000-\u200B\u202F\u205F\u3000]/g, " ")
 
@@ -298,7 +420,7 @@ function memberMatchesSearch(user, terms) {
   return terms.some((term) => memberMatchesSingleQuery(user, term))
 }
 
-function filterMembersBySearch(users, terms = getSearchTerms()) {
+function filterMembersBySearch(users, terms = []) {
   const list = Array.isArray(users) ? users : []
   if (!terms || terms.length === 0) {
     return list
@@ -331,6 +453,7 @@ function buildLegionCopyText(title, users) {
 async function copyLegionList(legionKey) {
   if (!state.board) {
     setStatus("Select an event first.", "error")
+    showCopyToast("Select an event first.", "error")
     return
   }
 
@@ -339,14 +462,17 @@ async function copyLegionList(legionKey) {
 
   if (!users || users.length === 0) {
     setStatus(`${title} has no members to copy.`, "error")
+    showCopyToast(`${title} has no members to copy.`, "error")
     return
   }
 
   try {
     await copyText(buildLegionCopyText(title, users))
     setStatus(`${title} list copied (${users.length}).`, "success")
+    showCopyToast(`${title} copied.`, "success")
   } catch (_error) {
     setStatus(`Could not copy ${title} list.`, "error")
+    showCopyToast(`Could not copy ${title}.`, "error")
   }
 }
 
@@ -434,7 +560,7 @@ function renderRegisteredUsers() {
     return
   }
 
-  const searchTerms = getSearchTerms()
+  const searchTerms = getSearchTerms(state.registeredSearch)
   const filteredUsers = filterMembersBySearch(state.users, searchTerms)
   if (filteredUsers.length === 0) {
     el.registeredUsers.innerHTML = `<div class="empty">No matching member.</div>`
@@ -445,12 +571,24 @@ function renderRegisteredUsers() {
     const row = document.createElement("div")
     row.className = "user-row"
 
+    const main = document.createElement("div")
+    main.className = "user-row-main"
+
     const info = document.createElement("div")
+    info.className = "user-row-info"
     const nickname = safeText(getMemberNickname(user), "Unknown")
-    info.innerHTML = `
-      <div class="name">${nickname}</div>
-      <div class="meta">FID ${safeText(user.fid)} | KID ${safeText(user.kid)} | Town Center ${safeText(user.stove_lv)}</div>
-    `
+    const nameEl = document.createElement("div")
+    nameEl.className = "name"
+    nameEl.textContent = nickname
+
+    const metaEl = document.createElement("div")
+    metaEl.className = "meta"
+    metaEl.textContent = `FID ${safeText(user.fid)} | Town Center ${safeText(user.stove_lv)}`
+
+    info.appendChild(nameEl)
+    info.appendChild(metaEl)
+    main.appendChild(createAvatarElement(user, "md"))
+    main.appendChild(info)
 
     const removeBtn = document.createElement("button")
     removeBtn.className = "btn danger"
@@ -470,7 +608,7 @@ function renderRegisteredUsers() {
       }
     })
 
-    row.appendChild(info)
+    row.appendChild(main)
     row.appendChild(removeBtn)
     el.registeredUsers.appendChild(row)
   }
@@ -519,13 +657,31 @@ function createMemberCard(user, zone) {
   const fid = safeText(user.fid)
   const stove = safeText(user.stove_lv)
 
-  card.innerHTML = `
-    <p class="title">${nickname}</p>
-    <p class="sub">FID ${fid} | Town Center ${stove}</p>
-    <div class="actions"></div>
-  `
+  const head = document.createElement("div")
+  head.className = "member-head"
 
-  const actions = card.querySelector(".actions")
+  const textWrap = document.createElement("div")
+  textWrap.className = "member-text"
+
+  const titleEl = document.createElement("p")
+  titleEl.className = "title"
+  titleEl.textContent = nickname
+
+  const subEl = document.createElement("p")
+  subEl.className = "sub"
+  subEl.textContent = `FID ${fid} | Town Center ${stove}`
+
+  textWrap.appendChild(titleEl)
+  textWrap.appendChild(subEl)
+
+  head.appendChild(createAvatarElement(user, "sm"))
+  head.appendChild(textWrap)
+
+  const actions = document.createElement("div")
+  actions.className = "actions"
+
+  card.appendChild(head)
+  card.appendChild(actions)
 
   const addAction = (label, className, onClick) => {
     const btn = document.createElement("button")
@@ -596,9 +752,9 @@ function renderBoard() {
   }
 
   el.boardTitle.textContent = state.board.event.name
-  el.boardMeta.textContent = `Event #${state.board.event.id} created at ${state.board.event.created_at}`
+  el.boardMeta.textContent = `created at ${state.board.event.created_at}`
 
-  const searchTerms = getSearchTerms()
+  const searchTerms = getSearchTerms(state.boardSearch)
   const unassignedFiltered = filterMembersBySearch(state.board.unassigned, searchTerms)
   const legion1Filtered = filterMembersBySearch(state.board.legion1, searchTerms)
   const legion2Filtered = filterMembersBySearch(state.board.legion2, searchTerms)
@@ -809,6 +965,7 @@ async function onCreateEvent() {
   try {
     const res = await api("/events", { method: "POST", body: { name } })
     el.eventNameInput.value = ""
+    setEventModalOpen(false)
     state.currentEventId = res.data.id
     setStatus(`Event created: ${res.data.name}`, "success")
     await refreshEvents()
@@ -871,9 +1028,51 @@ function bindEvents() {
   el.addBulkBtn?.addEventListener("click", onAddBulk)
   el.copyLegion1Btn?.addEventListener("click", () => copyLegionList("legion1"))
   el.copyLegion2Btn?.addEventListener("click", () => copyLegionList("legion2"))
+  el.openMemberModalBtn?.addEventListener("click", () => {
+    setMemberModalOpen(true)
+    el.singleFid?.focus()
+  })
+  el.closeMemberModalBtn?.addEventListener("click", () => setMemberModalOpen(false))
+  el.openEventModalBtn?.addEventListener("click", () => {
+    setEventModalOpen(true)
+    el.eventNameInput?.focus()
+  })
+  el.closeEventModalBtn?.addEventListener("click", () => setEventModalOpen(false))
 
-  el.toggleRegisteredBtn?.addEventListener("click", () => {
-    setRegisteredCollapsed(!state.registeredCollapsed)
+  el.memberRegModal?.addEventListener("click", (event) => {
+    const target = event.target
+    if (!(target instanceof HTMLElement)) {
+      return
+    }
+    if (target.dataset.closeModal === "true") {
+      setMemberModalOpen(false)
+    }
+  })
+
+  el.eventCreateModal?.addEventListener("click", (event) => {
+    const target = event.target
+    if (!(target instanceof HTMLElement)) {
+      return
+    }
+    if (target.dataset.closeEventModal === "true") {
+      setEventModalOpen(false)
+    }
+  })
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") {
+      return
+    }
+
+    if (!el.eventCreateModal?.classList.contains("hidden")) {
+      setEventModalOpen(false)
+      return
+    }
+
+    if (el.memberRegModal?.classList.contains("hidden")) {
+      return
+    }
+    setMemberModalOpen(false)
   })
 
   el.createEventBtn?.addEventListener("click", onCreateEvent)
@@ -892,9 +1091,13 @@ function bindEvents() {
   })
 
   el.memberSearchInput?.addEventListener("input", () => {
-    state.memberSearch = el.memberSearchInput.value || ""
-    renderRegisteredUsers()
+    state.boardSearch = safeText(el.memberSearchInput.value || "", "")
     renderBoard()
+  })
+
+  el.registeredSearchInput?.addEventListener("input", () => {
+    state.registeredSearch = safeText(el.registeredSearchInput.value || "", "")
+    renderRegisteredUsers()
   })
 
   el.eventSelect?.addEventListener("change", async (event) => {
@@ -926,7 +1129,10 @@ function bindEvents() {
 
 async function init() {
   bindEvents()
-  setRegisteredCollapsed(true)
+  setMemberModalOpen(false)
+  setEventModalOpen(false)
+  state.registeredSearch = safeText(el.registeredSearchInput?.value || "", "")
+  state.boardSearch = safeText(el.memberSearchInput?.value || "", "")
   setBulkProgress({
     visible: false,
     done: 0,
