@@ -46,6 +46,14 @@ Default DB file:
 - `DELETE /events/{event_id}/members/{fid}`
 - `POST /events/{event_id}/clear-legion` body: `{ "legion": "legion1" }`
 
+### Gift Codes
+
+- `GET /gift-codes`
+- `POST /gift-codes` body: `{ "code": "VIP777" }`
+- `DELETE /gift-codes/{gift_code_id}`
+- `POST /gift-codes/redeem` body: `{ "fid": 254813172, "cdk": "VIP777", "captcha_code": "" }`
+- `POST /gift-codes/use` body: `{ "fid": 254813172, "cdk": "VIP777" }` (`/redeem` alias)
+
 ## Frontend Files
 
 - `static/index.html`

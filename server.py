@@ -9,11 +9,12 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
-from player_api import extract_player_data, fetch_player
+from player_api import extract_player_data, fetch_gift_code, fetch_player
 
 LEGION_1 = "legion1"
 LEGION_2 = "legion2"
 LEGIONS = {LEGION_1, LEGION_2}
+ALLIANCE_RANKS = ("R5", "R4", "R3", "R2", "R1", "R0")
 BULK_USER_REQUEST_DELAY_SECONDS = 0.35
 
 
@@ -51,6 +52,21 @@ def normalize_event_id(value: Any) -> int:
     return event_id
 
 
+def normalize_gift_code_id(value: Any) -> int:
+    if isinstance(value, bool):
+        raise ValueError("gift_code_id must be an integer")
+
+    try:
+        gift_code_id = int(value)
+    except (TypeError, ValueError) as e:
+        raise ValueError("gift_code_id must be an integer") from e
+
+    if gift_code_id <= 0:
+        raise ValueError("gift_code_id must be greater than 0")
+
+    return gift_code_id
+
+
 def normalize_fids(values: Any) -> list[int]:
     if not isinstance(values, list):
         raise ValueError("fids must be a list of integers")
@@ -82,6 +98,51 @@ def normalize_event_name(value: Any) -> str:
         raise ValueError("name is too long")
 
     return name
+
+
+def normalize_gift_code(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError("code must be a string")
+
+    code = value.strip()
+    if not code:
+        raise ValueError("code cannot be empty")
+
+    if len(code) > 64:
+        raise ValueError("code is too long")
+
+    if any(char.isspace() for char in code):
+        raise ValueError("code cannot contain spaces")
+
+    return code
+
+
+def normalize_captcha_code(value: Any) -> str:
+    if value is None:
+        return ""
+
+    if not isinstance(value, str):
+        raise ValueError("captcha_code must be a string")
+
+    captcha_code = value.strip()
+    if len(captcha_code) > 64:
+        raise ValueError("captcha_code is too long")
+
+    if any(char.isspace() for char in captcha_code):
+        raise ValueError("captcha_code cannot contain spaces")
+
+    return captcha_code
+
+
+def normalize_alliance_rank(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError("rank must be a string")
+
+    normalized = value.strip().upper().replace(" ", "")
+    if normalized not in ALLIANCE_RANKS:
+        raise ValueError("rank must be one of R5, R4, R3, R2, R1, R0")
+
+    return normalized
 
 
 def normalize_legion(value: Any) -> str:
@@ -156,6 +217,33 @@ def init_db(db_path: str) -> None:
             )
             """
         )
+
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+        if "alliance_rank" not in columns:
+            conn.execute(
+                """
+                ALTER TABLE users
+                ADD COLUMN alliance_rank TEXT NOT NULL DEFAULT 'R0'
+                """
+            )
+        conn.execute(
+            """
+            UPDATE users
+            SET alliance_rank = 'R0'
+            WHERE alliance_rank IS NULL OR TRIM(alliance_rank) = ''
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS gift_codes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
         conn.commit()
 
 
@@ -167,6 +255,7 @@ def get_user(db_path: str, fid: int) -> dict[str, Any] | None:
                 fid,
                 nickname,
                 kid,
+                COALESCE(alliance_rank, 'R0') AS alliance_rank,
                 stove_lv,
                 stove_lv_content,
                 avatar_image,
@@ -190,6 +279,7 @@ def list_users(db_path: str) -> list[dict[str, Any]]:
                 fid,
                 nickname,
                 kid,
+                COALESCE(alliance_rank, 'R0') AS alliance_rank,
                 stove_lv,
                 stove_lv_content,
                 avatar_image,
@@ -275,6 +365,79 @@ def delete_users(db_path: str, fids: list[int]) -> list[int]:
     return deleted
 
 
+def list_user_fids(db_path: str) -> list[int]:
+    with db_connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT fid
+            FROM users
+            ORDER BY fid ASC
+            """
+        ).fetchall()
+
+    return [normalize_fid(row["fid"]) for row in rows]
+
+
+def refresh_users_from_api(db_path: str, fids: list[int] | None = None) -> dict[str, Any]:
+    target_fids = list_user_fids(db_path) if fids is None else list(fids)
+    if not target_fids:
+        return {
+            "total": 0,
+            "added": 0,
+            "updated": 0,
+            "failed": 0,
+            "failed_fids": [],
+            "results": [],
+        }
+
+    results: list[dict[str, Any]] = []
+    for idx, fid in enumerate(target_fids):
+        results.append(fetch_and_save_user(db_path, fid))
+        if idx < len(target_fids) - 1:
+            # External API applies rate limits; short spacing helps avoid 429 bursts.
+            time.sleep(BULK_USER_REQUEST_DELAY_SECONDS)
+
+    added = sum(1 for item in results if item.get("status") == "added")
+    updated = sum(1 for item in results if item.get("status") == "updated")
+    failed = sum(1 for item in results if item.get("status") == "error")
+    failed_fids = [item.get("fid") for item in results if item.get("status") == "error"]
+
+    return {
+        "total": len(target_fids),
+        "added": added,
+        "updated": updated,
+        "failed": failed,
+        "failed_fids": failed_fids,
+        "results": results,
+    }
+
+
+def update_user_rank(db_path: str, fid: int, rank: str) -> dict[str, Any]:
+    normalized_fid = normalize_fid(fid)
+    normalized_rank = normalize_alliance_rank(rank)
+    now = utc_now_iso()
+
+    with db_connect(db_path) as conn:
+        user_row = conn.execute("SELECT 1 FROM users WHERE fid = ?", (normalized_fid,)).fetchone()
+        if not user_row:
+            raise LookupError("user not found")
+
+        conn.execute(
+            """
+            UPDATE users
+            SET alliance_rank = ?, updated_at = ?
+            WHERE fid = ?
+            """,
+            (normalized_rank, now, normalized_fid),
+        )
+        conn.commit()
+
+    updated_user = get_user(db_path, normalized_fid)
+    if not updated_user:
+        raise LookupError("user not found")
+    return updated_user
+
+
 def fetch_and_save_user(db_path: str, fid: int) -> dict[str, Any]:
     try:
         result = fetch_player(fid)
@@ -335,6 +498,109 @@ def fetch_and_save_user(db_path: str, fid: int) -> dict[str, Any]:
     }
 
 
+def redeem_gift_code(fid: int, cdk: str, captcha_code: str) -> dict[str, Any]:
+    def build_error_response(
+        message: str,
+        result: dict[str, Any] | None = None,
+        login_refreshed: bool = False,
+        initial_response: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "fid": fid,
+            "cdk": cdk,
+            "captcha_code": captcha_code,
+            "status": "error",
+            "message": message,
+            "login_refreshed": login_refreshed,
+        }
+        if result:
+            payload["err_code"] = result.get("err_code")
+            payload["api_code"] = result.get("code")
+            payload["response"] = result
+        if initial_response is not None:
+            payload["initial_response"] = initial_response
+        return payload
+
+    def build_success_response(
+        result: dict[str, Any],
+        login_refreshed: bool = False,
+        initial_response: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "fid": fid,
+            "cdk": cdk,
+            "captcha_code": captcha_code,
+            "status": "success",
+            "login_refreshed": login_refreshed,
+            "response": result,
+        }
+        if initial_response is not None:
+            payload["initial_response"] = initial_response
+        return payload
+
+    def needs_login_retry(result: dict[str, Any]) -> bool:
+        err_code = result.get("err_code")
+        msg = str(result.get("msg") or "").strip().upper()
+        return str(err_code) == "40009" or msg == "NOT LOGIN."
+
+    try:
+        result = fetch_gift_code(fid, cdk, captcha_code)
+    except RuntimeError as e:
+        return build_error_response(str(e))
+
+    if not isinstance(result, dict):
+        return build_error_response("invalid API response type")
+
+    if result.get("code") == 0:
+        return build_success_response(result)
+
+    if not needs_login_retry(result):
+        return build_error_response(str(result.get("msg") or "API error"), result=result)
+
+    try:
+        player_result = fetch_player(fid)
+    except RuntimeError as e:
+        return build_error_response(f"login preflight failed: {e}", result=result)
+
+    if not isinstance(player_result, dict):
+        return build_error_response("login preflight failed: invalid API response type", result=result)
+
+    if player_result.get("code") != 0:
+        login_message = str(player_result.get("msg") or "login preflight API error")
+        return build_error_response(
+            f"login preflight failed: {login_message}",
+            result=result,
+        )
+
+    try:
+        retried = fetch_gift_code(fid, cdk, captcha_code)
+    except RuntimeError as e:
+        return build_error_response(
+            f"redeem retry failed: {e}",
+            result=result,
+            login_refreshed=True,
+            initial_response=result,
+        )
+
+    if not isinstance(retried, dict):
+        return build_error_response(
+            "redeem retry failed: invalid API response type",
+            result=result,
+            login_refreshed=True,
+            initial_response=result,
+        )
+
+    if retried.get("code") != 0:
+        return build_error_response(
+            str(retried.get("msg") or "API error"),
+            result=retried,
+            login_refreshed=True,
+            initial_response=result,
+        )
+
+    return build_success_response(retried, login_refreshed=True, initial_response=result)
+
+
 def get_event(db_path: str, event_id: int) -> dict[str, Any] | None:
     with db_connect(db_path) as conn:
         row = conn.execute(
@@ -343,6 +609,80 @@ def get_event(db_path: str, event_id: int) -> dict[str, Any] | None:
         ).fetchone()
 
     return dict(row) if row else None
+
+
+def get_gift_code(db_path: str, gift_code_id: int) -> dict[str, Any] | None:
+    with db_connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT id, code, created_at, updated_at
+            FROM gift_codes
+            WHERE id = ?
+            """,
+            (gift_code_id,),
+        ).fetchone()
+
+    return dict(row) if row else None
+
+
+def list_gift_codes(db_path: str) -> list[dict[str, Any]]:
+    with db_connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT id, code, created_at, updated_at
+            FROM gift_codes
+            ORDER BY id DESC
+            """
+        ).fetchall()
+
+    return [dict(row) for row in rows]
+
+
+def upsert_gift_code(db_path: str, code: str) -> dict[str, Any]:
+    normalized_code = normalize_gift_code(code)
+    now = utc_now_iso()
+
+    with db_connect(db_path) as conn:
+        existing = conn.execute(
+            "SELECT id FROM gift_codes WHERE code = ? COLLATE NOCASE",
+            (normalized_code,),
+        ).fetchone()
+
+        status = "exists" if existing else "added"
+        if existing:
+            gift_code_id = int(existing["id"])
+            conn.execute(
+                "UPDATE gift_codes SET code = ?, updated_at = ? WHERE id = ?",
+                (normalized_code, now, gift_code_id),
+            )
+        else:
+            cur = conn.execute(
+                """
+                INSERT INTO gift_codes (code, created_at, updated_at)
+                VALUES (?, ?, ?)
+                """,
+                (normalized_code, now, now),
+            )
+            gift_code_id = int(cur.lastrowid)
+
+        conn.commit()
+
+    saved = get_gift_code(db_path, gift_code_id)
+    if not saved:
+        raise RuntimeError("failed to save gift code")
+
+    return {
+        "status": status,
+        "gift_code": saved,
+    }
+
+
+def delete_gift_code(db_path: str, gift_code_id: int) -> bool:
+    with db_connect(db_path) as conn:
+        cur = conn.execute("DELETE FROM gift_codes WHERE id = ?", (gift_code_id,))
+        conn.commit()
+
+    return cur.rowcount > 0
 
 
 def create_event(db_path: str, name: str) -> dict[str, Any]:
@@ -471,6 +811,7 @@ def list_event_legion_members(db_path: str, event_id: int, legion: str) -> list[
                 u.fid,
                 u.nickname,
                 u.kid,
+                COALESCE(u.alliance_rank, 'R0') AS alliance_rank,
                 u.stove_lv,
                 u.stove_lv_content,
                 u.avatar_image,
@@ -499,6 +840,7 @@ def list_event_unassigned_users(db_path: str, event_id: int) -> list[dict[str, A
                 u.fid,
                 u.nickname,
                 u.kid,
+                COALESCE(u.alliance_rank, 'R0') AS alliance_rank,
                 u.stove_lv,
                 u.stove_lv_content,
                 u.avatar_image,
@@ -674,6 +1016,19 @@ class AllianceHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if path == "/gift-codes":
+            codes = list_gift_codes(self.db_path)
+            self._send_json(
+                200,
+                {
+                    "code": 0,
+                    "msg": "success",
+                    "count": len(codes),
+                    "data": codes,
+                },
+            )
+            return
+
         if len(parts) == 3 and parts[0] == "events" and parts[2] == "board":
             try:
                 event_id = normalize_event_id(parts[1])
@@ -716,6 +1071,46 @@ class AllianceHandler(BaseHTTPRequestHandler):
                 "data": result,
             }
             self._send_json(status_code, payload)
+            return
+
+        if len(parts) == 3 and parts[0] == "users" and parts[2] == "rank":
+            try:
+                fid = normalize_fid(parts[1])
+                rank = normalize_alliance_rank(body.get("rank"))
+            except ValueError as e:
+                self._send_json(400, {"code": 1, "msg": str(e)})
+                return
+
+            try:
+                updated_user = update_user_rank(self.db_path, fid, rank)
+            except LookupError as e:
+                self._send_json(404, {"code": 1, "msg": str(e)})
+                return
+
+            self._send_json(
+                200,
+                {
+                    "code": 0,
+                    "msg": "success",
+                    "data": {
+                        "fid": fid,
+                        "rank": rank,
+                        "user": updated_user,
+                    },
+                },
+            )
+            return
+
+        if path == "/users/refresh":
+            try:
+                raw_fids = body.get("fids", None)
+                fids = normalize_fids(raw_fids) if raw_fids is not None else None
+            except ValueError as e:
+                self._send_json(400, {"code": 1, "msg": str(e)})
+                return
+
+            data = refresh_users_from_api(self.db_path, fids)
+            self._send_json(200, {"code": 0, "msg": "success", "data": data})
             return
 
         if path == "/users/bulk":
@@ -785,6 +1180,44 @@ class AllianceHandler(BaseHTTPRequestHandler):
 
             event = create_event(self.db_path, name)
             self._send_json(200, {"code": 0, "msg": "success", "data": event})
+            return
+
+        if path == "/gift-codes":
+            try:
+                code = normalize_gift_code(body.get("code"))
+            except ValueError as e:
+                self._send_json(400, {"code": 1, "msg": str(e)})
+                return
+
+            try:
+                result = upsert_gift_code(self.db_path, code)
+            except RuntimeError as e:
+                self._send_json(500, {"code": 1, "msg": str(e)})
+                return
+
+            self._send_json(200, {"code": 0, "msg": "success", "data": result})
+            return
+
+        if path in {"/gift-codes/redeem", "/gift-codes/use"}:
+            try:
+                fid = normalize_fid(body.get("fid"))
+                raw_code = body.get("cdk") if "cdk" in body else body.get("code")
+                cdk = normalize_gift_code(raw_code)
+                captcha_code = normalize_captcha_code(body.get("captcha_code"))
+            except ValueError as e:
+                self._send_json(400, {"code": 1, "msg": str(e)})
+                return
+
+            result = redeem_gift_code(fid, cdk, captcha_code)
+            status_code = 200 if result.get("status") == "success" else 400
+            self._send_json(
+                status_code,
+                {
+                    "code": 0 if status_code == 200 else 1,
+                    "msg": "success" if status_code == 200 else "failed",
+                    "data": result,
+                },
+            )
             return
 
         if len(parts) == 3 and parts[0] == "events" and parts[2] == "assign":
@@ -902,6 +1335,24 @@ class AllianceHandler(BaseHTTPRequestHandler):
                 return
 
             self._send_json(200, {"code": 0, "msg": "success", "data": {"deleted_event_id": event_id}})
+            return
+
+        if len(parts) == 2 and parts[0] == "gift-codes":
+            try:
+                gift_code_id = normalize_gift_code_id(parts[1])
+            except ValueError as e:
+                self._send_json(400, {"code": 1, "msg": str(e)})
+                return
+
+            removed = delete_gift_code(self.db_path, gift_code_id)
+            if not removed:
+                self._send_json(404, {"code": 1, "msg": "gift code not found"})
+                return
+
+            self._send_json(
+                200,
+                {"code": 0, "msg": "success", "data": {"deleted_gift_code_id": gift_code_id}},
+            )
             return
 
         if len(parts) == 4 and parts[0] == "events" and parts[2] == "members":

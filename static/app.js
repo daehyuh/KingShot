@@ -1,14 +1,37 @@
 ﻿const state = {
   users: [],
   events: [],
+  giftCodes: [],
   currentEventId: null,
   board: null,
+  mainView: "registered",
   registeredSearch: "",
   boardSearch: "",
+  giftApplySearch: "",
+  giftSelectedFids: new Set(),
+  giftQueueRunning: false,
+  giftQueueResults: [],
+  giftFailedFids: [],
+  giftLastResultByFid: new Map(),
+  registeredRankExpanded: {
+    R5: true,
+    R4: false,
+    R3: false,
+    R2: false,
+    R1: false,
+    R0: false,
+  },
 }
 
 const el = {
   statusBar: document.getElementById("statusBar"),
+  mainGrid: document.getElementById("mainGrid"),
+  registeredPanel: document.getElementById("registeredPanel"),
+  showdownPanel: document.getElementById("showdownPanel"),
+  giftCodesPanel: document.getElementById("giftCodesPanel"),
+  viewRegisteredBtn: document.getElementById("viewRegisteredBtn"),
+  viewShowdownBtn: document.getElementById("viewShowdownBtn"),
+  viewGiftCodesBtn: document.getElementById("viewGiftCodesBtn"),
   copyToast: document.getElementById("copyToast"),
   memberRegModal: document.getElementById("memberRegModal"),
   openMemberModalBtn: document.getElementById("openMemberModalBtn"),
@@ -16,6 +39,9 @@ const el = {
   eventCreateModal: document.getElementById("eventCreateModal"),
   openEventModalBtn: document.getElementById("openEventModalBtn"),
   closeEventModalBtn: document.getElementById("closeEventModalBtn"),
+  giftCodeModal: document.getElementById("giftCodeModal"),
+  openGiftCodeModalBtn: document.getElementById("openGiftCodeModalBtn"),
+  closeGiftCodeModalBtn: document.getElementById("closeGiftCodeModalBtn"),
   singleFid: document.getElementById("singleFid"),
   bulkFids: document.getElementById("bulkFids"),
   bulkProgress: document.getElementById("bulkProgress"),
@@ -28,6 +54,7 @@ const el = {
   refreshBtn: document.getElementById("refreshBtn"),
   registeredUsersWrap: document.getElementById("registeredUsersWrap"),
   registeredUsers: document.getElementById("registeredUsers"),
+  registeredTitle: document.querySelector(".registered-title"),
   registeredSearchInput: document.getElementById("registeredSearchInput"),
   memberSearchInput: document.getElementById("memberSearchInput"),
   eventNameInput: document.getElementById("eventNameInput"),
@@ -46,9 +73,72 @@ const el = {
   unassignedList: document.getElementById("unassignedList"),
   legion1List: document.getElementById("legion1List"),
   legion2List: document.getElementById("legion2List"),
+  giftCodeInput: document.getElementById("giftCodeInput"),
+  addGiftCodeBtn: document.getElementById("addGiftCodeBtn"),
+  giftCodeTopList: document.getElementById("giftCodeTopList"),
+  giftCodesList: document.getElementById("giftCodesList"),
+  giftApplyCodeSelect: document.getElementById("giftApplyCodeSelect"),
+  giftUseSelectedCodeBtn: document.getElementById("giftUseSelectedCodeBtn"),
+  giftApplyCodeInput: document.getElementById("giftApplyCodeInput"),
+  giftApplySearchInput: document.getElementById("giftApplySearchInput"),
+  giftSelectAllBtn: document.getElementById("giftSelectAllBtn"),
+  giftClearSelectionBtn: document.getElementById("giftClearSelectionBtn"),
+  giftSelectionMeta: document.getElementById("giftSelectionMeta"),
+  applyGiftToSelectedBtn: document.getElementById("applyGiftToSelectedBtn"),
+  applyGiftToAllBtn: document.getElementById("applyGiftToAllBtn"),
+  retryGiftFailedBtn: document.getElementById("retryGiftFailedBtn"),
+  giftQueueProgress: document.getElementById("giftQueueProgress"),
+  giftQueueText: document.getElementById("giftQueueText"),
+  giftQueueMeta: document.getElementById("giftQueueMeta"),
+  giftQueueFill: document.getElementById("giftQueueFill"),
+  giftQueueDetail: document.getElementById("giftQueueDetail"),
+  giftTargetsList: document.getElementById("giftTargetsList"),
+  giftQueueResults: document.getElementById("giftQueueResults"),
 }
 
 let copyToastTimer = null
+const ALLIANCE_RANKS = ["R5", "R4", "R3", "R2", "R1", "R0"]
+const GIFT_QUEUE_REQUEST_DELAY_MS = 220
+const GIFT_QUEUE_COOLDOWN_EVERY = 15
+const GIFT_QUEUE_COOLDOWN_MS = 3500
+
+function normalizeAllianceRank(value) {
+  const normalized = safeText(value, "R0")
+    .toUpperCase()
+    .replace(/\s+/g, "")
+  return ALLIANCE_RANKS.includes(normalized) ? normalized : "R0"
+}
+
+function getMemberAllianceRank(user) {
+  if (!user || typeof user !== "object") {
+    return "R0"
+  }
+  return normalizeAllianceRank(user.alliance_rank ?? user.rank ?? "R0")
+}
+
+function isRegisteredRankCollapsible(rank) {
+  return rank === "R4" || rank === "R3" || rank === "R2" || rank === "R1" || rank === "R0"
+}
+
+function getRegisteredRankExpanded(rank) {
+  if (!isRegisteredRankCollapsible(rank)) {
+    return true
+  }
+
+  const stored = state.registeredRankExpanded?.[rank]
+  return typeof stored === "boolean" ? stored : false
+}
+
+function setRegisteredRankExpanded(rank, expanded) {
+  if (!isRegisteredRankCollapsible(rank)) {
+    return
+  }
+
+  if (!state.registeredRankExpanded || typeof state.registeredRankExpanded !== "object") {
+    state.registeredRankExpanded = {}
+  }
+  state.registeredRankExpanded[rank] = !!expanded
+}
 
 function setStatus(message, type = "info") {
   if (!el.statusBar) {
@@ -56,6 +146,22 @@ function setStatus(message, type = "info") {
   }
   el.statusBar.textContent = message
   el.statusBar.dataset.type = type
+}
+
+function setMainView(view) {
+  const nextView = view === "showdown" || view === "gift-codes" ? view : "registered"
+  state.mainView = nextView
+
+  const showRegistered = nextView === "registered"
+  const showShowdown = nextView === "showdown"
+  const showGiftCodes = nextView === "gift-codes"
+
+  el.registeredPanel?.classList.toggle("hidden", !showRegistered)
+  el.showdownPanel?.classList.toggle("hidden", !showShowdown)
+  el.giftCodesPanel?.classList.toggle("hidden", !showGiftCodes)
+  el.viewRegisteredBtn?.classList.toggle("active", showRegistered)
+  el.viewShowdownBtn?.classList.toggle("active", showShowdown)
+  el.viewGiftCodesBtn?.classList.toggle("active", showGiftCodes)
 }
 
 function showCopyToast(message, type = "success") {
@@ -80,8 +186,9 @@ function showCopyToast(message, type = "success") {
 function syncBodyModalState() {
   const memberOpen = !!el.memberRegModal && !el.memberRegModal.classList.contains("hidden")
   const eventOpen = !!el.eventCreateModal && !el.eventCreateModal.classList.contains("hidden")
+  const giftCodeOpen = !!el.giftCodeModal && !el.giftCodeModal.classList.contains("hidden")
 
-  if (memberOpen || eventOpen) {
+  if (memberOpen || eventOpen || giftCodeOpen) {
     document.body.classList.add("modal-open")
     return
   }
@@ -120,6 +227,23 @@ function setEventModalOpen(isOpen) {
 
   el.eventCreateModal.classList.add("hidden")
   el.eventCreateModal.setAttribute("aria-hidden", "true")
+  syncBodyModalState()
+}
+
+function setGiftCodeModalOpen(isOpen) {
+  if (!el.giftCodeModal) {
+    return
+  }
+
+  if (isOpen) {
+    el.giftCodeModal.classList.remove("hidden")
+    el.giftCodeModal.setAttribute("aria-hidden", "false")
+    syncBodyModalState()
+    return
+  }
+
+  el.giftCodeModal.classList.add("hidden")
+  el.giftCodeModal.setAttribute("aria-hidden", "true")
   syncBodyModalState()
 }
 
@@ -502,7 +626,10 @@ async function api(path, options = {}) {
   }
 
   if (!response.ok || payload.code === 1) {
-    throw new Error(payload.msg || `Request failed (${response.status})`)
+    const err = new Error(payload.msg || `Request failed (${response.status})`)
+    err.status = response.status
+    err.payload = payload
+    throw err
   }
 
   return payload
@@ -511,7 +638,9 @@ async function api(path, options = {}) {
 async function refreshUsers() {
   const res = await api("/users")
   state.users = Array.isArray(res.data) ? res.data : []
+  trimGiftSelections()
   renderRegisteredUsers()
+  renderGiftTargets()
 }
 
 async function refreshEvents() {
@@ -542,15 +671,583 @@ async function refreshBoard() {
   renderBoard()
 }
 
+async function refreshGiftCodes() {
+  const res = await api("/gift-codes")
+  state.giftCodes = Array.isArray(res.data) ? res.data : []
+  renderGiftCodes()
+}
+
 async function refreshAll() {
   await refreshUsers()
+  await refreshGiftCodes()
   await refreshEvents()
   await refreshBoard()
+}
+
+function normalizeGiftCodeValue(value) {
+  const code = safeText(value, "").trim()
+  if (!code) {
+    return { ok: false, message: "Enter a gift code first." }
+  }
+  if (code.length > 64) {
+    return { ok: false, message: "Gift code is too long." }
+  }
+  if (/\s/.test(code)) {
+    return { ok: false, message: "Gift code cannot contain spaces." }
+  }
+  return { ok: true, code }
+}
+
+function resolveGiftCodeToApply() {
+  const manualInput = safeText(el.giftApplyCodeInput?.value, "").trim()
+  const selectedInput = safeText(el.giftApplyCodeSelect?.value, "").trim()
+  const candidate = manualInput || selectedInput
+  const normalized = normalizeGiftCodeValue(candidate)
+  if (!normalized.ok) {
+    return normalized
+  }
+  return { ok: true, code: normalized.code }
+}
+
+function shortGiftText(value, maxLen = 100) {
+  const text = safeText(value, "").trim()
+  if (!text) {
+    return ""
+  }
+  if (text.length <= maxLen) {
+    return text
+  }
+  return `${text.slice(0, maxLen)}...`
+}
+
+function trimGiftSelections() {
+  const available = new Set()
+  for (const user of state.users) {
+    const fid = Number(user?.fid)
+    if (Number.isInteger(fid) && fid > 0) {
+      available.add(fid)
+    }
+  }
+
+  for (const manualTarget of getManualGiftTargetsFromSearch()) {
+    const fid = Number(manualTarget?.fid)
+    if (Number.isInteger(fid) && fid > 0) {
+      available.add(fid)
+    }
+  }
+
+  for (const fid of Array.from(state.giftSelectedFids)) {
+    if (!available.has(fid)) {
+      state.giftSelectedFids.delete(fid)
+    }
+  }
+
+  state.giftFailedFids = Array.from(
+    new Set(
+      (Array.isArray(state.giftFailedFids) ? state.giftFailedFids : [])
+        .map((fid) => Number(fid))
+        .filter((fid) => Number.isInteger(fid) && fid > 0)
+    )
+  )
+}
+
+function createManualGiftTarget(fid) {
+  return {
+    fid,
+    nickname: `Manual FID ${fid}`,
+    stove_lv: null,
+    alliance_rank: "R0",
+    is_manual: true,
+  }
+}
+
+function getManualGiftTargetsFromSearch() {
+  const parsedFids = parseFids(state.giftApplySearch)
+  if (parsedFids.length === 0) {
+    return []
+  }
+
+  const registeredFids = new Set(
+    (Array.isArray(state.users) ? state.users : [])
+      .map((user) => Number(user?.fid))
+      .filter((fid) => Number.isInteger(fid) && fid > 0)
+  )
+
+  const manualTargets = []
+  for (const fid of parsedFids) {
+    if (registeredFids.has(fid)) {
+      continue
+    }
+    manualTargets.push(createManualGiftTarget(fid))
+  }
+
+  return manualTargets
+}
+
+function getGiftTargetLookupByFid() {
+  const byFid = new Map()
+
+  for (const user of Array.isArray(state.users) ? state.users : []) {
+    const fid = Number(user?.fid)
+    if (!Number.isInteger(fid) || fid <= 0 || byFid.has(fid)) {
+      continue
+    }
+    byFid.set(fid, user)
+  }
+
+  for (const manualTarget of getManualGiftTargetsFromSearch()) {
+    const fid = Number(manualTarget?.fid)
+    if (!Number.isInteger(fid) || fid <= 0 || byFid.has(fid)) {
+      continue
+    }
+    byFid.set(fid, manualTarget)
+  }
+
+  return byFid
+}
+
+function getFilteredGiftTargets() {
+  const terms = getSearchTerms(state.giftApplySearch)
+  const filteredRegistered = filterMembersBySearch(state.users, terms)
+  const manualTargets = getManualGiftTargetsFromSearch()
+  return [...manualTargets, ...filteredRegistered]
+}
+
+function getSelectedGiftTargets() {
+  if (state.giftSelectedFids.size === 0) {
+    return []
+  }
+
+  const byFid = getGiftTargetLookupByFid()
+  const selectedTargets = []
+
+  for (const fid of Array.from(state.giftSelectedFids)) {
+    const target = byFid.get(Number(fid))
+    if (target) {
+      selectedTargets.push(target)
+      continue
+    }
+
+    if (Number.isInteger(Number(fid)) && Number(fid) > 0) {
+      selectedTargets.push(createManualGiftTarget(Number(fid)))
+    }
+  }
+
+  return selectedTargets
+}
+
+function getFailedGiftTargets() {
+  if (!Array.isArray(state.giftFailedFids) || state.giftFailedFids.length === 0) {
+    return []
+  }
+
+  const byFid = getGiftTargetLookupByFid()
+  const failedTargets = []
+
+  for (const rawFid of state.giftFailedFids) {
+    const fid = Number(rawFid)
+    if (!Number.isInteger(fid) || fid <= 0) {
+      continue
+    }
+
+    const target = byFid.get(fid)
+    if (target) {
+      failedTargets.push(target)
+      continue
+    }
+
+    failedTargets.push(createManualGiftTarget(fid))
+  }
+
+  return failedTargets
+}
+
+function setGiftQueueProgress({
+  visible,
+  done,
+  total,
+  success = 0,
+  failed = 0,
+  currentLabel = "",
+  phase = "waiting",
+}) {
+  if (!el.giftQueueProgress || !el.giftQueueText || !el.giftQueueMeta || !el.giftQueueFill || !el.giftQueueDetail) {
+    return
+  }
+
+  if (!visible) {
+    el.giftQueueProgress.classList.add("hidden")
+    return
+  }
+
+  el.giftQueueProgress.classList.remove("hidden")
+
+  const safeTotal = Math.max(0, Number(total) || 0)
+  const safeDone = Math.min(safeTotal, Math.max(0, Number(done) || 0))
+  const safeFailed = Math.max(0, Number(failed) || 0)
+  const safeSuccess = Math.max(0, Number(success) || 0)
+  const waiting = Math.max(0, safeTotal - safeDone)
+  const ratio = safeTotal === 0 ? 0 : (safeDone / safeTotal) * 100
+
+  el.giftQueueText.textContent = `${safeDone}/${safeTotal}`
+  el.giftQueueMeta.textContent = `Success ${safeSuccess} | Failed ${safeFailed} | Waiting ${waiting}`
+  el.giftQueueFill.style.width = `${ratio}%`
+
+  if (phase === "done") {
+    el.giftQueueDetail.textContent = "Gift queue complete."
+    return
+  }
+
+  if (phase === "cooldown") {
+    el.giftQueueDetail.textContent = "Cooling down to avoid rate limit..."
+    return
+  }
+
+  if (phase === "error") {
+    el.giftQueueDetail.textContent = "Queue stopped because of error."
+    return
+  }
+
+  if (currentLabel) {
+    el.giftQueueDetail.textContent = `Applying code to ${currentLabel}...`
+    return
+  }
+
+  el.giftQueueDetail.textContent = "Preparing gift queue..."
+}
+
+function renderGiftQueueResults() {
+  if (!el.giftQueueResults) {
+    return
+  }
+
+  el.giftQueueResults.innerHTML = ""
+
+  if (!Array.isArray(state.giftQueueResults) || state.giftQueueResults.length === 0) {
+    el.giftQueueResults.innerHTML = `<div class="empty">No apply history yet.</div>`
+    return
+  }
+
+  const rows = [...state.giftQueueResults].reverse()
+  for (const item of rows) {
+    const row = document.createElement("div")
+    row.className = `gift-queue-row ${item.status === "success" ? "success" : "error"}`
+
+    const head = document.createElement("div")
+    head.className = "gift-queue-row-head"
+
+    const title = document.createElement("div")
+    title.className = "gift-queue-row-title"
+    title.textContent = `${safeText(item.nickname, "Unknown")} (FID ${safeText(item.fid)})`
+
+    const badge = document.createElement("span")
+    badge.className = `gift-target-badge ${item.status === "success" ? "success" : "error"}`
+    badge.textContent = item.status === "success" ? "SUCCESS" : "FAILED"
+
+    head.appendChild(title)
+    head.appendChild(badge)
+
+    const meta = document.createElement("div")
+    meta.className = "gift-queue-row-meta"
+    const codeText = safeText(item.code, "-")
+    const message = shortGiftText(item.message || "-", 120)
+    const appliedAt = safeText(item.appliedAt, "-")
+    meta.textContent = `Code ${codeText} | ${message} | ${appliedAt}`
+
+    row.appendChild(head)
+    row.appendChild(meta)
+    el.giftQueueResults.appendChild(row)
+  }
+}
+
+function renderGiftTargets() {
+  if (!el.giftTargetsList) {
+    return
+  }
+
+  const filteredUsers = getFilteredGiftTargets()
+  const selectedCount = getSelectedGiftTargets().length
+  const registeredCount = Array.isArray(state.users) ? state.users.length : 0
+  const queueRunning = state.giftQueueRunning
+
+  if (el.giftSelectionMeta) {
+    el.giftSelectionMeta.textContent = `Selected ${selectedCount} | Visible ${filteredUsers.length} | Registered ${registeredCount}`
+  }
+
+  if (el.giftSelectAllBtn) {
+    el.giftSelectAllBtn.disabled = queueRunning || filteredUsers.length === 0
+  }
+  if (el.giftClearSelectionBtn) {
+    el.giftClearSelectionBtn.disabled = queueRunning || state.giftSelectedFids.size === 0
+  }
+  if (el.applyGiftToSelectedBtn) {
+    el.applyGiftToSelectedBtn.disabled = queueRunning || selectedCount === 0
+  }
+  if (el.applyGiftToAllBtn) {
+    el.applyGiftToAllBtn.disabled = queueRunning || registeredCount === 0
+  }
+  if (el.retryGiftFailedBtn) {
+    el.retryGiftFailedBtn.disabled = queueRunning || state.giftFailedFids.length === 0
+  }
+  if (el.giftUseSelectedCodeBtn) {
+    el.giftUseSelectedCodeBtn.disabled = queueRunning
+  }
+  if (el.giftApplyCodeSelect) {
+    el.giftApplyCodeSelect.disabled = queueRunning
+  }
+  if (el.giftApplyCodeInput) {
+    el.giftApplyCodeInput.disabled = queueRunning
+  }
+
+  el.giftTargetsList.innerHTML = ""
+  if (filteredUsers.length === 0) {
+    const emptyMessage = registeredCount === 0 ? "No registered members yet." : "No matching member."
+    el.giftTargetsList.innerHTML = `<div class="empty">${emptyMessage}</div>`
+    return
+  }
+
+  for (const user of filteredUsers) {
+    const fid = Number(user?.fid)
+    if (!Number.isInteger(fid) || fid <= 0) {
+      continue
+    }
+
+    const nickname = safeText(getMemberNickname(user), "Unknown")
+    const row = document.createElement("div")
+    row.className = "gift-target-row"
+
+    const main = document.createElement("div")
+    main.className = "gift-target-main"
+
+    const check = document.createElement("input")
+    check.type = "checkbox"
+    check.className = "gift-target-check"
+    check.checked = state.giftSelectedFids.has(fid)
+    check.disabled = queueRunning
+    check.addEventListener("change", () => {
+      if (check.checked) {
+        state.giftSelectedFids.add(fid)
+      } else {
+        state.giftSelectedFids.delete(fid)
+      }
+      renderGiftTargets()
+    })
+
+    const info = document.createElement("div")
+    info.className = "gift-target-info"
+
+    const title = document.createElement("div")
+    title.className = "gift-target-title"
+    title.textContent = nickname
+
+    const meta = document.createElement("div")
+    meta.className = "gift-target-meta"
+    if (user?.is_manual) {
+      meta.textContent = `FID ${fid} | Manual target (not registered)`
+    } else {
+      meta.textContent = `FID ${fid} | Town Center ${safeText(user?.stove_lv)} | Rank ${getMemberAllianceRank(user)}`
+    }
+
+    info.appendChild(title)
+    info.appendChild(meta)
+
+    if (user?.is_manual) {
+      const manualBadge = document.createElement("span")
+      manualBadge.className = "gift-target-badge info"
+      manualBadge.textContent = "MANUAL"
+      info.appendChild(manualBadge)
+    }
+
+    const lastResult = state.giftLastResultByFid.get(fid)
+    if (lastResult) {
+      const lastWrap = document.createElement("div")
+      lastWrap.className = "gift-target-last"
+
+      const badge = document.createElement("span")
+      badge.className = `gift-target-badge ${lastResult.status === "success" ? "success" : "error"}`
+      badge.textContent = lastResult.status === "success" ? "SUCCESS" : "FAILED"
+
+      const message = document.createElement("span")
+      message.className = "gift-target-last-msg"
+      message.textContent = shortGiftText(lastResult.message || "")
+
+      lastWrap.appendChild(badge)
+      if (message.textContent) {
+        lastWrap.appendChild(message)
+      }
+      info.appendChild(lastWrap)
+    }
+
+    main.appendChild(check)
+    main.appendChild(createAvatarElement(user, "sm"))
+    main.appendChild(info)
+
+    const actions = document.createElement("div")
+    actions.className = "gift-target-actions"
+
+    const applyOneBtn = document.createElement("button")
+    applyOneBtn.className = "btn sm"
+    applyOneBtn.type = "button"
+    applyOneBtn.textContent = "Apply"
+    applyOneBtn.disabled = queueRunning
+    applyOneBtn.addEventListener("click", async () => {
+      await onApplyGiftToSingle(user)
+    })
+
+    actions.appendChild(applyOneBtn)
+    row.appendChild(main)
+    row.appendChild(actions)
+    el.giftTargetsList.appendChild(row)
+  }
+}
+
+function renderGiftCodeSelect() {
+  if (!el.giftApplyCodeSelect) {
+    return
+  }
+
+  const previous = safeText(el.giftApplyCodeSelect.value, "").trim()
+  const codes = Array.isArray(state.giftCodes) ? state.giftCodes : []
+
+  el.giftApplyCodeSelect.innerHTML = ""
+
+  const placeholder = document.createElement("option")
+  placeholder.value = ""
+  placeholder.textContent = codes.length === 0 ? "No saved codes" : "Select saved code"
+  el.giftApplyCodeSelect.appendChild(placeholder)
+
+  for (const codeItem of codes) {
+    const codeText = safeText(codeItem?.code, "").trim()
+    if (!codeText) {
+      continue
+    }
+    const option = document.createElement("option")
+    option.value = codeText
+    option.textContent = codeText
+    if (codeText === previous) {
+      option.selected = true
+    }
+    el.giftApplyCodeSelect.appendChild(option)
+  }
+
+  if (!el.giftApplyCodeSelect.value && codes.length > 0) {
+    el.giftApplyCodeSelect.value = safeText(codes[0]?.code, "")
+  }
+}
+
+function pickGiftCodeForApply(code) {
+  const normalized = normalizeGiftCodeValue(code)
+  if (!normalized.ok) {
+    return
+  }
+
+  if (el.giftApplyCodeInput) {
+    el.giftApplyCodeInput.value = normalized.code
+  }
+
+  if (el.giftApplyCodeSelect) {
+    const options = Array.from(el.giftApplyCodeSelect.options || [])
+    const matched = options.find((option) => option.value === normalized.code)
+    if (matched) {
+      el.giftApplyCodeSelect.value = normalized.code
+    }
+  }
+}
+
+function renderGiftCodes() {
+  if (!el.giftCodeTopList || !el.giftCodesList) {
+    return
+  }
+
+  const queueRunning = state.giftQueueRunning
+  if (el.giftCodeInput) {
+    el.giftCodeInput.disabled = queueRunning
+  }
+  if (el.addGiftCodeBtn) {
+    el.addGiftCodeBtn.disabled = queueRunning
+  }
+  if (el.openGiftCodeModalBtn) {
+    el.openGiftCodeModalBtn.disabled = queueRunning
+  }
+
+  el.giftCodeTopList.innerHTML = ""
+  el.giftCodesList.innerHTML = ""
+  renderGiftCodeSelect()
+
+  const codes = Array.isArray(state.giftCodes) ? state.giftCodes : []
+  let rendered = 0
+
+  for (const codeItem of codes) {
+    const codeText = safeText(codeItem?.code, "").trim()
+    const codeId = Number(codeItem?.id)
+    if (!codeText || !Number.isInteger(codeId) || codeId <= 0) {
+      continue
+    }
+
+    const chip = document.createElement("button")
+    chip.type = "button"
+    chip.className = "gift-chip"
+    chip.textContent = codeText
+    chip.disabled = queueRunning
+    chip.addEventListener("click", () => {
+      pickGiftCodeForApply(codeText)
+      setStatus(`Gift code ${codeText} selected for apply.`, "info")
+    })
+    el.giftCodeTopList.appendChild(chip)
+
+    const row = document.createElement("div")
+    row.className = "gift-code-row"
+
+    const textEl = document.createElement("div")
+    textEl.className = "gift-code-text"
+    textEl.textContent = codeText
+
+    const actions = document.createElement("div")
+    actions.className = "gift-code-row-actions"
+
+    const useBtn = document.createElement("button")
+    useBtn.className = "btn ghost sm"
+    useBtn.type = "button"
+    useBtn.textContent = "Use"
+    useBtn.disabled = queueRunning
+    useBtn.addEventListener("click", () => {
+      pickGiftCodeForApply(codeText)
+      setStatus(`Gift code ${codeText} selected for apply.`, "info")
+    })
+
+    const deleteBtn = document.createElement("button")
+    deleteBtn.className = "btn danger sm"
+    deleteBtn.type = "button"
+    deleteBtn.textContent = "Delete"
+    deleteBtn.disabled = queueRunning
+    deleteBtn.addEventListener("click", async () => {
+      await onDeleteGiftCode(codeId, codeText)
+    })
+
+    actions.appendChild(useBtn)
+    actions.appendChild(deleteBtn)
+    row.appendChild(textEl)
+    row.appendChild(actions)
+    el.giftCodesList.appendChild(row)
+    rendered += 1
+  }
+
+  if (rendered === 0) {
+    el.giftCodeTopList.innerHTML = `<div class="empty">No gift codes yet.</div>`
+    el.giftCodesList.innerHTML = `<div class="empty">No gift codes yet.</div>`
+  }
+
+  renderGiftTargets()
+  renderGiftQueueResults()
 }
 
 function renderRegisteredUsers() {
   if (!el.registeredUsers) {
     return
+  }
+
+  if (el.registeredTitle) {
+    el.registeredTitle.textContent = `Registered Members (${state.users.length})`
   }
 
   el.registeredUsers.innerHTML = ""
@@ -567,50 +1264,170 @@ function renderRegisteredUsers() {
     return
   }
 
+  const groupedUsers = new Map(ALLIANCE_RANKS.map((rank) => [rank, []]))
   for (const user of filteredUsers) {
-    const row = document.createElement("div")
-    row.className = "user-row"
+    const rank = getMemberAllianceRank(user)
+    const bucket = groupedUsers.get(rank)
+    if (bucket) {
+      bucket.push(user)
+      continue
+    }
+    groupedUsers.get("R0")?.push(user)
+  }
 
-    const main = document.createElement("div")
-    main.className = "user-row-main"
+  const hasSearch = searchTerms.length > 0
 
-    const info = document.createElement("div")
-    info.className = "user-row-info"
-    const nickname = safeText(getMemberNickname(user), "Unknown")
-    const nameEl = document.createElement("div")
-    nameEl.className = "name"
-    nameEl.textContent = nickname
+  for (const rank of ALLIANCE_RANKS) {
+    const usersInRank = groupedUsers.get(rank) || []
+    if (hasSearch && usersInRank.length === 0) {
+      continue
+    }
+    const collapsible = isRegisteredRankCollapsible(rank)
+    const expanded = hasSearch ? true : getRegisteredRankExpanded(rank)
 
-    const metaEl = document.createElement("div")
-    metaEl.className = "meta"
-    metaEl.textContent = `FID ${safeText(user.fid)} | Town Center ${safeText(user.stove_lv)}`
+    const group = document.createElement("section")
+    group.className = "rank-group"
+    if (collapsible && !expanded) {
+      group.classList.add("collapsed")
+    }
 
-    info.appendChild(nameEl)
-    info.appendChild(metaEl)
-    main.appendChild(createAvatarElement(user, "md"))
-    main.appendChild(info)
+    const header = document.createElement("div")
+    header.className = "rank-group-head"
 
-    const removeBtn = document.createElement("button")
-    removeBtn.className = "btn danger"
-    removeBtn.textContent = "Delete"
-    removeBtn.addEventListener("click", async () => {
-      const ok = window.confirm(`Delete user ${nickname} (FID ${user.fid})?`)
-      if (!ok) {
-        return
+    const title = document.createElement("span")
+    title.className = "rank-badge"
+    title.textContent = rank
+
+    const count = document.createElement("span")
+    count.className = "rank-count"
+    count.textContent = `${usersInRank.length}`
+
+    const headerTools = document.createElement("div")
+    headerTools.className = "rank-group-tools"
+    headerTools.appendChild(count)
+
+    if (collapsible) {
+      const toggleBtn = document.createElement("button")
+      toggleBtn.type = "button"
+      toggleBtn.className = "btn ghost xs rank-toggle"
+      toggleBtn.setAttribute("aria-expanded", expanded ? "true" : "false")
+      toggleBtn.setAttribute(
+        "aria-label",
+        expanded ? `${rank} collapse` : `${rank} expand`
+      )
+
+      const chevron = document.createElement("span")
+      chevron.className = "rank-toggle-chevron"
+      chevron.textContent = ">"
+      toggleBtn.appendChild(chevron)
+
+      toggleBtn.addEventListener("click", () => {
+        setRegisteredRankExpanded(rank, !expanded)
+        renderRegisteredUsers()
+      })
+      headerTools.appendChild(toggleBtn)
+    }
+
+    header.appendChild(title)
+    header.appendChild(headerTools)
+    group.appendChild(header)
+
+    if (collapsible && !expanded) {
+      el.registeredUsers.appendChild(group)
+      continue
+    }
+
+    const groupBody = document.createElement("div")
+    groupBody.className = "stack rank-group-body"
+
+    if (usersInRank.length === 0) {
+      groupBody.innerHTML = `<div class="empty">No members</div>`
+      group.appendChild(groupBody)
+      el.registeredUsers.appendChild(group)
+      continue
+    }
+
+    for (const user of usersInRank) {
+      const row = document.createElement("div")
+      row.className = "user-row"
+
+      const main = document.createElement("div")
+      main.className = "user-row-main"
+
+      const info = document.createElement("div")
+      info.className = "user-row-info"
+      const nickname = safeText(getMemberNickname(user), "Unknown")
+      const nameEl = document.createElement("div")
+      nameEl.className = "name"
+      nameEl.textContent = nickname
+
+      const metaEl = document.createElement("div")
+      metaEl.className = "meta"
+      metaEl.textContent = `FID ${safeText(user.fid)} | Town Center ${safeText(user.stove_lv)}`
+
+      info.appendChild(nameEl)
+      info.appendChild(metaEl)
+      main.appendChild(createAvatarElement(user, "md"))
+      main.appendChild(info)
+
+      const actions = document.createElement("div")
+      actions.className = "user-row-actions"
+
+      let currentRank = getMemberAllianceRank(user)
+      const rankSelect = document.createElement("select")
+      rankSelect.className = "rank-select"
+      for (const optionRank of ALLIANCE_RANKS) {
+        const option = document.createElement("option")
+        option.value = optionRank
+        option.textContent = optionRank
+        rankSelect.appendChild(option)
       }
+      rankSelect.value = currentRank
+      rankSelect.addEventListener("change", async () => {
+        const nextRank = normalizeAllianceRank(rankSelect.value)
+        if (nextRank === currentRank) {
+          return
+        }
 
-      try {
-        await api(`/users/${user.fid}`, { method: "DELETE" })
-        setStatus(`User ${user.fid} deleted.`, "success")
-        await refreshAll()
-      } catch (error) {
-        setStatus(error.message, "error")
-      }
-    })
+        rankSelect.disabled = true
+        const updated = await onUpdateUserRank(user.fid, nextRank)
+        rankSelect.disabled = false
 
-    row.appendChild(main)
-    row.appendChild(removeBtn)
-    el.registeredUsers.appendChild(row)
+        if (!updated) {
+          rankSelect.value = currentRank
+          return
+        }
+
+        currentRank = nextRank
+      })
+
+      const removeBtn = document.createElement("button")
+      removeBtn.className = "btn danger"
+      removeBtn.textContent = "Delete"
+      removeBtn.addEventListener("click", async () => {
+        const ok = window.confirm(`Delete user ${nickname} (FID ${user.fid})?`)
+        if (!ok) {
+          return
+        }
+
+        try {
+          await api(`/users/${user.fid}`, { method: "DELETE" })
+          setStatus(`User ${user.fid} deleted.`, "success")
+          await refreshAll()
+        } catch (error) {
+          setStatus(error.message, "error")
+        }
+      })
+
+      actions.appendChild(rankSelect)
+      actions.appendChild(removeBtn)
+      row.appendChild(main)
+      row.appendChild(actions)
+      groupBody.appendChild(row)
+    }
+
+    group.appendChild(groupBody)
+    el.registeredUsers.appendChild(group)
   }
 }
 
@@ -817,6 +1634,26 @@ async function unassignFromEvent(fid) {
   }
 }
 
+async function onUpdateUserRank(fid, rank) {
+  try {
+    await api(`/users/${fid}/rank`, {
+      method: "POST",
+      body: { rank },
+    })
+    setStatus(`FID ${fid} rank updated to ${rank}.`, "success")
+    await refreshUsers()
+    return true
+  } catch (error) {
+    const message = safeText(error?.message, "request failed")
+    if (message.trim().toLowerCase() === "not found") {
+      setStatus("Rank API not found. Restart server and refresh browser.", "error")
+      return false
+    }
+    setStatus(message, "error")
+    return false
+  }
+}
+
 async function onAddSingle() {
   const fid = Number(el.singleFid?.value)
   if (!Number.isInteger(fid) || fid <= 0) {
@@ -955,6 +1792,297 @@ async function onAddBulk() {
   }
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, Math.max(0, Number(ms) || 0))
+  })
+}
+
+function buildGiftErrorMessage(error) {
+  const payloadData = error?.payload?.data
+  const responseData = payloadData?.response
+
+  let message = safeText(payloadData?.message, "")
+  if (!message || message.toLowerCase() === "failed") {
+    message = safeText(responseData?.msg, "") || safeText(error?.message, "failed")
+  }
+
+  const errCode = payloadData?.err_code ?? responseData?.err_code ?? null
+  if (errCode === null || errCode === undefined || errCode === "") {
+    return message
+  }
+
+  return `${message} (err_code ${errCode})`
+}
+
+function normalizeGiftTargets(targetUsers) {
+  const list = Array.isArray(targetUsers) ? targetUsers : []
+  const normalized = []
+  const seen = new Set()
+
+  for (const user of list) {
+    const fid = Number(user?.fid)
+    if (!Number.isInteger(fid) || fid <= 0 || seen.has(fid)) {
+      continue
+    }
+    seen.add(fid)
+    normalized.push({
+      fid,
+      nickname: safeText(getMemberNickname(user), `FID${fid}`),
+    })
+  }
+
+  return normalized
+}
+
+async function runGiftApplyQueue(targetUsers, sourceLabel) {
+  if (state.giftQueueRunning) {
+    setStatus("Gift queue is already running.", "error")
+    return
+  }
+
+  const targets = normalizeGiftTargets(targetUsers)
+  if (targets.length === 0) {
+    setStatus("No valid target members selected.", "error")
+    return
+  }
+
+  const codeInfo = resolveGiftCodeToApply()
+  if (!codeInfo.ok) {
+    setStatus(codeInfo.message, "error")
+    return
+  }
+
+  const code = codeInfo.code
+  if (el.giftApplyCodeInput) {
+    el.giftApplyCodeInput.value = code
+  }
+
+  state.giftQueueRunning = true
+  state.giftFailedFids = []
+  renderGiftCodes()
+
+  const total = targets.length
+  let success = 0
+  let failed = 0
+  let queueCrashed = false
+
+  setGiftQueueProgress({
+    visible: true,
+    done: 0,
+    total,
+    success: 0,
+    failed: 0,
+    currentLabel: "",
+  })
+
+  try {
+    for (let i = 0; i < total; i += 1) {
+      if (i > 0 && i % GIFT_QUEUE_COOLDOWN_EVERY === 0) {
+        setGiftQueueProgress({
+          visible: true,
+          done: i,
+          total,
+          success,
+          failed,
+          currentLabel: "",
+          phase: "cooldown",
+        })
+        await sleep(GIFT_QUEUE_COOLDOWN_MS)
+      }
+
+      const target = targets[i]
+      const progress = i + 1
+      const currentLabel = `${target.nickname} (FID ${target.fid})`
+      setStatus(`Gift queue ${progress}/${total} - ${currentLabel}`, "info")
+      setGiftQueueProgress({
+        visible: true,
+        done: i,
+        total,
+        success,
+        failed,
+        currentLabel,
+      })
+
+      const entry = {
+        fid: target.fid,
+        nickname: target.nickname,
+        code,
+        status: "error",
+        message: "failed",
+        appliedAt: new Date().toLocaleString(),
+      }
+
+      try {
+        const res = await api("/gift-codes/redeem", {
+          method: "POST",
+          body: {
+            fid: target.fid,
+            cdk: code,
+          },
+        })
+
+        const status = safeText(res?.data?.status, "success")
+        if (status === "success") {
+          success += 1
+          entry.status = "success"
+          entry.message = safeText(res?.data?.response?.msg, "success")
+        } else {
+          failed += 1
+          entry.status = "error"
+          entry.message = safeText(res?.data?.message, "failed")
+          state.giftFailedFids.push(target.fid)
+        }
+      } catch (error) {
+        failed += 1
+        entry.status = "error"
+        entry.message = buildGiftErrorMessage(error)
+        state.giftFailedFids.push(target.fid)
+      }
+
+      state.giftLastResultByFid.set(target.fid, entry)
+      state.giftQueueResults.push(entry)
+      if (state.giftQueueResults.length > 300) {
+        state.giftQueueResults = state.giftQueueResults.slice(-300)
+      }
+      renderGiftQueueResults()
+      renderGiftTargets()
+
+      setGiftQueueProgress({
+        visible: true,
+        done: progress,
+        total,
+        success,
+        failed,
+        currentLabel: "",
+      })
+
+      if (progress < total) {
+        await sleep(GIFT_QUEUE_REQUEST_DELAY_MS)
+      }
+    }
+  } catch (error) {
+    queueCrashed = true
+    setGiftQueueProgress({
+      visible: true,
+      done: success + failed,
+      total,
+      success,
+      failed,
+      currentLabel: "",
+      phase: "error",
+    })
+    setStatus(safeText(error?.message, "Gift queue failed."), "error")
+  } finally {
+    state.giftFailedFids = Array.from(new Set(state.giftFailedFids))
+    state.giftQueueRunning = false
+    renderGiftCodes()
+  }
+
+  if (queueCrashed) {
+    return
+  }
+
+  setGiftQueueProgress({
+    visible: true,
+    done: total,
+    total,
+    success,
+    failed,
+    currentLabel: "",
+    phase: "done",
+  })
+  setStatus(
+    `${sourceLabel} complete. Success ${success}, failed ${failed}.`,
+    failed > 0 ? "error" : "success"
+  )
+}
+
+async function onApplyGiftToSingle(user) {
+  await runGiftApplyQueue([user], `Single apply`)
+}
+
+async function onApplyGiftToSelected() {
+  const targets = getSelectedGiftTargets()
+  if (targets.length === 0) {
+    setStatus("Select at least one member.", "error")
+    return
+  }
+  await runGiftApplyQueue(targets, `Selected apply`)
+}
+
+async function onApplyGiftToAll() {
+  if (!Array.isArray(state.users) || state.users.length === 0) {
+    setStatus("No registered members to apply.", "error")
+    return
+  }
+
+  const ok = window.confirm(`Apply current gift code to all ${state.users.length} registered members?`)
+  if (!ok) {
+    return
+  }
+
+  await runGiftApplyQueue(state.users, `Apply to all`)
+}
+
+async function onRetryGiftFailed() {
+  const targets = getFailedGiftTargets()
+  if (targets.length === 0) {
+    setStatus("No failed targets to retry.", "error")
+    return
+  }
+
+  await runGiftApplyQueue(targets, `Retry failed`)
+}
+
+async function onAddGiftCode() {
+  const normalized = normalizeGiftCodeValue(el.giftCodeInput?.value || "")
+  if (!normalized.ok) {
+    setStatus(normalized.message, "error")
+    return
+  }
+  const code = normalized.code
+
+  try {
+    const res = await api("/gift-codes", {
+      method: "POST",
+      body: { code },
+    })
+    const status = safeText(res?.data?.status, "added")
+    const savedCode = safeText(res?.data?.gift_code?.code, code)
+    if (el.giftCodeInput) {
+      el.giftCodeInput.value = ""
+    }
+    await refreshGiftCodes()
+    pickGiftCodeForApply(savedCode)
+    setGiftCodeModalOpen(false)
+
+    if (status === "exists") {
+      setStatus(`Gift code ${savedCode} already exists.`, "info")
+      return
+    }
+
+    setStatus(`Gift code ${savedCode} added.`, "success")
+  } catch (error) {
+    setStatus(error.message, "error")
+  }
+}
+
+async function onDeleteGiftCode(giftCodeId, code) {
+  const ok = window.confirm(`Delete gift code ${code}?`)
+  if (!ok) {
+    return
+  }
+
+  try {
+    await api(`/gift-codes/${giftCodeId}`, { method: "DELETE" })
+    setStatus(`Gift code ${code} deleted.`, "success")
+    await refreshGiftCodes()
+  } catch (error) {
+    setStatus(error.message, "error")
+  }
+}
+
 async function onCreateEvent() {
   const name = (el.eventNameInput?.value || "").trim()
   if (!name) {
@@ -1024,8 +2152,41 @@ async function onClearLegion(legion) {
 }
 
 function bindEvents() {
+  el.viewRegisteredBtn?.addEventListener("click", () => setMainView("registered"))
+  el.viewShowdownBtn?.addEventListener("click", () => setMainView("showdown"))
+  el.viewGiftCodesBtn?.addEventListener("click", () => setMainView("gift-codes"))
   el.addSingleBtn?.addEventListener("click", onAddSingle)
   el.addBulkBtn?.addEventListener("click", onAddBulk)
+  el.addGiftCodeBtn?.addEventListener("click", onAddGiftCode)
+  el.applyGiftToSelectedBtn?.addEventListener("click", onApplyGiftToSelected)
+  el.applyGiftToAllBtn?.addEventListener("click", onApplyGiftToAll)
+  el.retryGiftFailedBtn?.addEventListener("click", onRetryGiftFailed)
+  el.giftUseSelectedCodeBtn?.addEventListener("click", () => {
+    const selectedCode = safeText(el.giftApplyCodeSelect?.value, "").trim()
+    const normalized = normalizeGiftCodeValue(selectedCode)
+    if (!normalized.ok) {
+      setStatus("Select a saved code first.", "error")
+      return
+    }
+    pickGiftCodeForApply(normalized.code)
+    setStatus(`Gift code ${normalized.code} selected for apply.`, "info")
+  })
+  el.giftSelectAllBtn?.addEventListener("click", () => {
+    const visibleUsers = getFilteredGiftTargets()
+    for (const user of visibleUsers) {
+      const fid = Number(user?.fid)
+      if (Number.isInteger(fid) && fid > 0) {
+        state.giftSelectedFids.add(fid)
+      }
+    }
+    renderGiftTargets()
+    setStatus(`${visibleUsers.length} visible members selected.`, "info")
+  })
+  el.giftClearSelectionBtn?.addEventListener("click", () => {
+    state.giftSelectedFids.clear()
+    renderGiftTargets()
+    setStatus("Gift target selection cleared.", "info")
+  })
   el.copyLegion1Btn?.addEventListener("click", () => copyLegionList("legion1"))
   el.copyLegion2Btn?.addEventListener("click", () => copyLegionList("legion2"))
   el.openMemberModalBtn?.addEventListener("click", () => {
@@ -1038,6 +2199,11 @@ function bindEvents() {
     el.eventNameInput?.focus()
   })
   el.closeEventModalBtn?.addEventListener("click", () => setEventModalOpen(false))
+  el.openGiftCodeModalBtn?.addEventListener("click", () => {
+    setGiftCodeModalOpen(true)
+    el.giftCodeInput?.focus()
+  })
+  el.closeGiftCodeModalBtn?.addEventListener("click", () => setGiftCodeModalOpen(false))
 
   el.memberRegModal?.addEventListener("click", (event) => {
     const target = event.target
@@ -1059,8 +2225,23 @@ function bindEvents() {
     }
   })
 
+  el.giftCodeModal?.addEventListener("click", (event) => {
+    const target = event.target
+    if (!(target instanceof HTMLElement)) {
+      return
+    }
+    if (target.dataset.closeGiftCodeModal === "true") {
+      setGiftCodeModalOpen(false)
+    }
+  })
+
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") {
+      return
+    }
+
+    if (!el.giftCodeModal?.classList.contains("hidden")) {
+      setGiftCodeModalOpen(false)
       return
     }
 
@@ -1082,11 +2263,81 @@ function bindEvents() {
   el.clearLegion2Btn?.addEventListener("click", () => onClearLegion("legion2"))
 
   el.refreshBtn?.addEventListener("click", async () => {
+    const refreshButton = el.refreshBtn
+    if (refreshButton) {
+      refreshButton.disabled = true
+    }
+
     try {
+      await refreshUsers()
+      const fids = Array.from(
+        new Set(
+          (Array.isArray(state.users) ? state.users : [])
+            .map((user) => Number(user?.fid))
+            .filter((fid) => Number.isInteger(fid) && fid > 0)
+        )
+      )
+
+      const total = fids.length
+      if (total === 0) {
+        setStatus("등록된 멤버가 없어서 동기화할 대상이 없습니다.", "info")
+        return
+      }
+
+      let added = 0
+      let updated = 0
+      let failed = 0
+      const failedFids = []
+      const requestDelayMs = 350
+
+      for (let index = 0; index < total; index += 1) {
+        const fid = fids[index]
+        const progress = index + 1
+        setStatus(`전체인원 동기화 ${progress}/${total} (FID ${fid})`, "info")
+
+        try {
+          const res = await api("/users", { method: "POST", body: { fid } })
+          const userStatus = safeText(res?.data?.status, "").toLowerCase()
+          if (userStatus === "added") {
+            added += 1
+          } else if (userStatus === "updated") {
+            updated += 1
+          } else {
+            failed += 1
+            failedFids.push(fid)
+          }
+        } catch (_error) {
+          failed += 1
+          failedFids.push(fid)
+        }
+
+        if (index < total - 1) {
+          await new Promise((resolve) => setTimeout(resolve, requestDelayMs))
+        }
+      }
+
       await refreshAll()
-      setStatus("Data refreshed.", "success")
+
+      if (failed > 0) {
+        const preview = failedFids.slice(0, 8).join(", ")
+        const suffix = failedFids.length > 8 ? " ..." : ""
+        setStatus(
+          `동기화 완료 ${total}/${total} | updated ${updated}, added ${added}, failed ${failed} (${preview}${suffix})`,
+          "error"
+        )
+        return
+      }
+
+      setStatus(
+        `동기화 완료 ${total}/${total} | updated ${updated}, added ${added}, failed ${failed}`,
+        "success"
+      )
     } catch (error) {
       setStatus(error.message, "error")
+    } finally {
+      if (refreshButton) {
+        refreshButton.disabled = false
+      }
     }
   })
 
@@ -1098,6 +2349,21 @@ function bindEvents() {
   el.registeredSearchInput?.addEventListener("input", () => {
     state.registeredSearch = safeText(el.registeredSearchInput.value || "", "")
     renderRegisteredUsers()
+  })
+
+  el.giftApplySearchInput?.addEventListener("input", () => {
+    state.giftApplySearch = safeText(el.giftApplySearchInput.value || "", "")
+    renderGiftTargets()
+  })
+
+  el.giftApplyCodeSelect?.addEventListener("change", () => {
+    const selectedCode = safeText(el.giftApplyCodeSelect?.value, "").trim()
+    if (!selectedCode) {
+      return
+    }
+    if (!safeText(el.giftApplyCodeInput?.value, "").trim()) {
+      pickGiftCodeForApply(selectedCode)
+    }
   })
 
   el.eventSelect?.addEventListener("change", async (event) => {
@@ -1125,18 +2391,49 @@ function bindEvents() {
       onCreateEvent()
     }
   })
+
+  el.giftCodeInput?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault()
+      onAddGiftCode()
+    }
+  })
+
+  el.giftApplyCodeInput?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault()
+      onApplyGiftToSelected()
+    }
+  })
+
+  el.giftApplySearchInput?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault()
+      onApplyGiftToSelected()
+    }
+  })
 }
 
 async function init() {
   bindEvents()
+  setMainView("registered")
   setMemberModalOpen(false)
   setEventModalOpen(false)
+  setGiftCodeModalOpen(false)
   state.registeredSearch = safeText(el.registeredSearchInput?.value || "", "")
   state.boardSearch = safeText(el.memberSearchInput?.value || "", "")
+  state.giftApplySearch = safeText(el.giftApplySearchInput?.value || "", "")
   setBulkProgress({
     visible: false,
     done: 0,
     total: 0,
+  })
+  setGiftQueueProgress({
+    visible: false,
+    done: 0,
+    total: 0,
+    success: 0,
+    failed: 0,
   })
 
   try {
@@ -1148,3 +2445,5 @@ async function init() {
 }
 
 init()
+
+

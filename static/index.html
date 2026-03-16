@@ -11,13 +11,18 @@
   <main class="layout">
     <header class="hero panel">
       <p class="eyebrow">Alliance Operations</p>
-      <h1>Swordland Showdown Team Manager</h1>
-      <p class="subtitle">Register alliance members once, then split teams into Legion 1 and Legion 2 for every event cycle.</p>
+      <h1>#1687 ARC Alliance Manager</h1>
       <div id="statusBar" class="status" data-type="info">Ready.</div>
     </header>
 
-    <section class="grid">
-      <section class="panel">
+    <section class="tool-switch panel">
+      <button id="viewRegisteredBtn" class="btn ghost active" type="button">Registered Members</button>
+      <button id="viewShowdownBtn" class="btn ghost" type="button">Swordland Showdown Team Manager</button>
+      <button id="viewGiftCodesBtn" class="btn ghost" type="button">Gift Code Manager</button>
+    </section>
+
+    <section id="mainGrid" class="grid single-view">
+      <section id="registeredPanel" class="panel">
         <div class="panel-head registered-head">
           <h3 class="registered-title">Registered Members</h3>
           <div class="inline-row registered-actions">
@@ -35,9 +40,9 @@
         </div>
       </section>
 
-      <section class="panel">
+      <section id="showdownPanel" class="panel hidden">
         <div class="panel-head event-head">
-          <h2>Event Setup</h2>
+          <h2>Swordland Showdown Team Manager</h2>
           <button id="openEventModalBtn" class="btn primary sm" type="button">Add Event</button>
         </div>
 
@@ -99,6 +104,67 @@
           <button id="deleteEventBtn" class="btn danger">Delete Event</button>
         </div>
       </section>
+
+      <section id="giftCodesPanel" class="panel hidden">
+        <div class="panel-head gift-head">
+          <h2>Gift Code Manager</h2>
+          <button id="openGiftCodeModalBtn" class="btn primary sm" type="button">Add Code</button>
+        </div>
+        <p class="meta">Save codes, then apply to one member, selected members, or all registered members with queue progress.</p>
+
+        <p class="label">Gift Code List (click to fill apply input)</p>
+        <div id="giftCodeTopList" class="gift-code-top-list"></div>
+
+        <div class="split-line"></div>
+
+        <h3 class="gift-manage-title">Apply Gift Code</h3>
+        <label class="label" for="giftApplyCodeSelect">Saved code</label>
+        <div class="inline-row gift-apply-code-row">
+          <select id="giftApplyCodeSelect"></select>
+          <button id="giftUseSelectedCodeBtn" class="btn ghost sm" type="button">Use Selected</button>
+        </div>
+
+        <label class="label" for="giftApplyCodeInput">Code to apply</label>
+        <input id="giftApplyCodeInput" type="text" maxlength="64" placeholder="VIP777" />
+
+        <label class="label" for="giftApplySearchInput">Target search</label>
+        <input id="giftApplySearchInput" type="text" placeholder="Nickname/FID (comma separated, unregistered FID allowed)" />
+
+        <div class="inline-row gift-target-tools">
+          <button id="giftSelectAllBtn" class="btn ghost sm" type="button">Select Filtered</button>
+          <button id="giftClearSelectionBtn" class="btn ghost sm" type="button">Clear Selection</button>
+          <span id="giftSelectionMeta" class="meta gift-selection-meta">Selected 0 / 0</span>
+        </div>
+
+        <div class="inline-row gift-apply-actions">
+          <button id="applyGiftToSelectedBtn" class="btn primary" type="button">Apply to Selected</button>
+          <button id="applyGiftToAllBtn" class="btn" type="button">Apply to All</button>
+          <button id="retryGiftFailedBtn" class="btn ghost" type="button">Retry Failed</button>
+        </div>
+
+        <div id="giftQueueProgress" class="bulk-progress hidden">
+          <div class="bulk-progress-head">
+            <span id="giftQueueText">0/0</span>
+            <span id="giftQueueMeta">Success 0 | Failed 0 | Waiting 0</span>
+          </div>
+          <div class="bulk-progress-track">
+            <div id="giftQueueFill" class="bulk-progress-fill"></div>
+          </div>
+          <p id="giftQueueDetail" class="bulk-progress-detail">Queue idle.</p>
+        </div>
+
+        <div id="giftTargetsList" class="stack gift-targets-list"></div>
+
+        <div class="split-line"></div>
+
+        <h3 class="gift-manage-title">Apply Queue Log</h3>
+        <div id="giftQueueResults" class="stack gift-queue-results"></div>
+
+        <div class="split-line"></div>
+
+        <h3 class="gift-manage-title">Manage Codes</h3>
+        <div id="giftCodesList" class="stack gift-codes-list"></div>
+      </section>
     </section>
   </main>
 
@@ -146,6 +212,22 @@
       <input id="eventNameInput" type="text" maxlength="120" placeholder="Swordland Showdown #1" />
       <div class="inline-row right">
         <button id="createEventBtn" class="btn primary">Create</button>
+      </div>
+    </section>
+  </div>
+
+  <div id="giftCodeModal" class="modal hidden" aria-hidden="true">
+    <div class="modal-backdrop" data-close-gift-code-modal="true"></div>
+    <section class="modal-dialog panel" role="dialog" aria-modal="true" aria-labelledby="giftCodeModalTitle">
+      <div class="panel-head">
+        <h2 id="giftCodeModalTitle">Add Gift Code</h2>
+        <button id="closeGiftCodeModalBtn" class="btn ghost sm" type="button">Close</button>
+      </div>
+
+      <label class="label" for="giftCodeInput">Gift code</label>
+      <input id="giftCodeInput" type="text" maxlength="64" placeholder="KS0315" />
+      <div class="inline-row right">
+        <button id="addGiftCodeBtn" class="btn primary" type="button">Add Code</button>
       </div>
     </section>
   </div>
