@@ -117,7 +117,7 @@ function getMemberAllianceRank(user) {
 }
 
 function isRegisteredRankCollapsible(rank) {
-  return rank === "R4" || rank === "R3" || rank === "R2" || rank === "R1" || rank === "R0"
+  return false
 }
 
 function getRegisteredRankExpanded(rank) {
