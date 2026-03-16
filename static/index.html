@@ -1,0 +1,131 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Swordland Showdown Manager</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="ambient"></div>
+  <main class="layout">
+    <header class="hero panel">
+      <p class="eyebrow">Alliance Operations</p>
+      <h1>Swordland Showdown Team Manager</h1>
+      <p class="subtitle">Register alliance members once, then split teams into Legion 1 and Legion 2 for every event cycle.</p>
+      <div id="statusBar" class="status" data-type="info">Ready.</div>
+    </header>
+
+    <section class="grid">
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Member Registration</h2>
+        </div>
+
+        <label class="label" for="singleFid">Add one user by FID</label>
+        <div class="inline-row">
+          <input id="singleFid" type="number" min="1" placeholder="e.g. 254813172" />
+          <button id="addSingleBtn" class="btn primary">Add</button>
+        </div>
+
+        <label class="label" for="bulkFids">Add multiple users (comma/newline)</label>
+        <textarea id="bulkFids" rows="4" placeholder="254813172, 111111111, 222222222"></textarea>
+        <div class="inline-row right">
+          <button id="addBulkBtn" class="btn">Bulk Add</button>
+        </div>
+        <div id="bulkProgress" class="bulk-progress hidden">
+          <div class="bulk-progress-head">
+            <span id="bulkProgressText">0/0</span>
+            <span id="bulkProgressMeta">Waiting 0</span>
+          </div>
+          <div class="bulk-progress-track">
+            <div id="bulkProgressFill" class="bulk-progress-fill"></div>
+          </div>
+          <p id="bulkProgressDetail" class="bulk-progress-detail">Queue idle.</p>
+        </div>
+
+        <div class="split-line"></div>
+
+        <div class="panel-head">
+          <h3>Registered Members</h3>
+          <div class="inline-row">
+            <button id="toggleRegisteredBtn" class="btn ghost sm">Expand</button>
+            <button id="refreshBtn" class="btn ghost sm">Refresh</button>
+          </div>
+        </div>
+        <div id="registeredUsersWrap" class="registered-wrap hidden">
+          <div id="registeredUsers" class="stack"></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Event Setup</h2>
+        </div>
+
+        <label class="label" for="eventNameInput">Create event</label>
+        <div class="inline-row">
+          <input id="eventNameInput" type="text" maxlength="120" placeholder="Swordland Showdown #1" />
+          <button id="createEventBtn" class="btn primary">Create</button>
+        </div>
+
+        <label class="label" for="eventSelect">Select event</label>
+        <div class="inline-row">
+          <select id="eventSelect"></select>
+          <button id="deleteEventBtn" class="btn danger">Delete</button>
+        </div>
+
+        <div class="inline-row right">
+          <button id="clearLegion1Btn" class="btn">Clear Legion 1</button>
+          <button id="clearLegion2Btn" class="btn">Clear Legion 2</button>
+        </div>
+
+        <label class="label" for="memberSearchInput">Member Search</label>
+        <input id="memberSearchInput" type="text" placeholder="Nickname/FID (comma separated)" />
+        <p class="meta">Supports multiple search terms: XeneosX, ouall, Korea</p>
+
+        <div class="split-line"></div>
+
+        <div class="panel-head compact">
+          <h3 id="boardTitle">No event selected</h3>
+          <p id="boardMeta" class="meta">Create an event to start team assignment.</p>
+        </div>
+
+        <section class="board-grid">
+          <article class="column">
+            <header>
+              <h4>Unassigned</h4>
+              <span id="countUnassigned" class="count">0</span>
+            </header>
+            <div id="unassignedList" class="stack"></div>
+          </article>
+
+          <article class="column legion1">
+            <header>
+              <h4>Legion 1</h4>
+              <div class="column-tools">
+                <span id="countLegion1" class="count">0</span>
+                <button id="copyLegion1Btn" class="btn ghost xs">Copy</button>
+              </div>
+            </header>
+            <div id="legion1List" class="stack"></div>
+          </article>
+
+          <article class="column legion2">
+            <header>
+              <h4>Legion 2</h4>
+              <div class="column-tools">
+                <span id="countLegion2" class="count">0</span>
+                <button id="copyLegion2Btn" class="btn ghost xs">Copy</button>
+              </div>
+            </header>
+            <div id="legion2List" class="stack"></div>
+          </article>
+        </section>
+      </section>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
