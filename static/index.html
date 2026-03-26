@@ -11,9 +11,22 @@
   <main class="layout">
     <header class="hero panel">
       <p class="eyebrow">Alliance Operations</p>
-      <h1>#1687 Ace Alliance Manager</h1>
+      <h1>#1687 Alliance Manager</h1>
       <div id="statusBar" class="status" data-type="info">Ready.</div>
     </header>
+
+    <section class="alliance-toolbar panel">
+      <div class="panel-head alliance-head">
+        <div>
+          <p class="eyebrow">Current Alliance</p>
+          <h2 id="allianceTitle">No alliance selected</h2>
+          <p id="allianceMeta" class="meta">Users, events, and gift targets are scoped to the selected alliance.</p>
+        </div>
+        <button id="addAllianceBtn" class="btn primary sm" type="button">Add Alliance</button>
+      </div>
+
+      <div id="allianceButtons" class="alliance-grid" aria-label="Alliance selection"></div>
+    </section>
 
     <section class="tool-switch panel">
       <button id="viewRegisteredBtn" class="btn ghost active" type="button">Registered Members</button>

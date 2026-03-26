@@ -1,4 +1,6 @@
 ﻿const state = {
+  alliances: [],
+  currentAllianceId: null,
   users: [],
   events: [],
   giftCodes: [],
@@ -25,6 +27,10 @@
 
 const el = {
   statusBar: document.getElementById("statusBar"),
+  allianceButtons: document.getElementById("allianceButtons"),
+  allianceTitle: document.getElementById("allianceTitle"),
+  allianceMeta: document.getElementById("allianceMeta"),
+  addAllianceBtn: document.getElementById("addAllianceBtn"),
   mainGrid: document.getElementById("mainGrid"),
   registeredPanel: document.getElementById("registeredPanel"),
   showdownPanel: document.getElementById("showdownPanel"),
@@ -146,6 +152,39 @@ function setStatus(message, type = "info") {
   }
   el.statusBar.textContent = message
   el.statusBar.dataset.type = type
+}
+
+function getCurrentAlliance() {
+  if (!Array.isArray(state.alliances) || state.alliances.length === 0) {
+    return null
+  }
+
+  return state.alliances.find((alliance) => alliance.id === state.currentAllianceId) || null
+}
+
+function getCurrentAllianceName(fallback = "") {
+  const alliance = getCurrentAlliance()
+  return alliance ? safeText(alliance.name, fallback) : fallback
+}
+
+function buildAllianceScopedPath(path) {
+  const allianceId = Number(state.currentAllianceId)
+  if (!Number.isInteger(allianceId) || allianceId <= 0) {
+    return path
+  }
+
+  const separator = path.includes("?") ? "&" : "?"
+  return `${path}${separator}alliance_id=${encodeURIComponent(String(allianceId))}`
+}
+
+function requireCurrentAllianceId(actionLabel = "continue") {
+  const allianceId = Number(state.currentAllianceId)
+  if (Number.isInteger(allianceId) && allianceId > 0) {
+    return allianceId
+  }
+
+  setStatus(`Select an alliance first to ${actionLabel}.`, "error")
+  return null
 }
 
 function setMainView(view) {
@@ -635,8 +674,74 @@ async function api(path, options = {}) {
   return payload
 }
 
+function renderAllianceSelector() {
+  if (!el.allianceButtons || !el.allianceTitle || !el.allianceMeta || !el.addAllianceBtn) {
+    return
+  }
+
+  const alliances = Array.isArray(state.alliances) ? state.alliances : []
+  el.allianceButtons.innerHTML = ""
+
+  if (alliances.length === 0) {
+    el.allianceTitle.textContent = "No alliance selected"
+    el.allianceMeta.textContent = "Create an alliance to start managing members and events."
+    el.allianceButtons.innerHTML = `<div class="empty">No alliances yet.</div>`
+    return
+  }
+
+  const hasCurrent = alliances.some((alliance) => alliance.id === state.currentAllianceId)
+  if (!hasCurrent) {
+    state.currentAllianceId = alliances[0].id
+  }
+
+  for (const alliance of alliances) {
+    const button = document.createElement("button")
+    button.type = "button"
+    button.className = "alliance-card"
+    if (alliance.id === state.currentAllianceId) {
+      button.classList.add("active")
+    }
+    button.disabled = state.giftQueueRunning
+    button.setAttribute("aria-pressed", alliance.id === state.currentAllianceId ? "true" : "false")
+    button.addEventListener("click", async () => {
+      await onChangeAlliance(alliance.id)
+    })
+
+    const name = document.createElement("div")
+    name.className = "alliance-card-name"
+    name.textContent = safeText(alliance.name, `Alliance ${alliance.id}`)
+
+    const meta = document.createElement("div")
+    meta.className = "alliance-card-meta"
+    meta.textContent = alliance.id === state.currentAllianceId ? "Current" : "Select"
+
+    button.appendChild(name)
+    button.appendChild(meta)
+    el.allianceButtons.appendChild(button)
+  }
+
+  const currentAllianceName = getCurrentAllianceName("Unknown Alliance")
+  el.addAllianceBtn.disabled = state.giftQueueRunning
+  el.allianceTitle.textContent = `#1687 ${currentAllianceName}`
+  el.allianceMeta.textContent = "Registered members, events, and gift targets are filtered by this alliance."
+}
+
+async function refreshAlliances() {
+  const res = await api("/alliances")
+  state.alliances = Array.isArray(res.data) ? res.data : []
+  renderAllianceSelector()
+}
+
 async function refreshUsers() {
-  const res = await api("/users")
+  if (!state.currentAllianceId) {
+    state.users = []
+    trimGiftSelections()
+    renderRegisteredUsers()
+    renderGiftTargets()
+    return
+  }
+
+  const res = await api(buildAllianceScopedPath("/users"))
   state.users = Array.isArray(res.data) ? res.data : []
   trimGiftSelections()
   renderRegisteredUsers()
@@ -644,7 +749,14 @@ async function refreshUsers() {
 }
 
 async function refreshEvents() {
-  const res = await api("/events")
+  if (!state.currentAllianceId) {
+    state.events = []
+    state.currentEventId = null
+    renderEventSelector()
+    return
+  }
+
+  const res = await api(buildAllianceScopedPath("/events"))
   state.events = Array.isArray(res.data) ? res.data : []
 
   if (state.events.length === 0) {
@@ -678,6 +790,7 @@ async function refreshGiftCodes() {
 }
 
 async function refreshAll() {
+  await refreshAlliances()
   await refreshUsers()
   await refreshGiftCodes()
   await refreshEvents()
@@ -762,6 +875,10 @@ function createManualGiftTarget(fid) {
 }
 
 function getManualGiftTargetsFromSearch() {
+  if (!state.currentAllianceId) {
+    return []
+  }
+
   const parsedFids = parseFids(state.giftApplySearch)
   if (parsedFids.length === 0) {
     return []
@@ -814,6 +931,10 @@ function getFilteredGiftTargets() {
 }
 
 function getSelectedGiftTargets() {
+  if (!state.currentAllianceId) {
+    return []
+  }
+
   if (state.giftSelectedFids.size === 0) {
     return []
   }
@@ -837,6 +958,10 @@ function getSelectedGiftTargets() {
 }
 
 function getFailedGiftTargets() {
+  if (!state.currentAllianceId) {
+    return []
+  }
+
   if (!Array.isArray(state.giftFailedFids) || state.giftFailedFids.length === 0) {
     return []
   }
@@ -1000,6 +1125,11 @@ function renderGiftTargets() {
   }
 
   el.giftTargetsList.innerHTML = ""
+  if (!state.currentAllianceId) {
+    el.giftTargetsList.innerHTML = `<div class="empty">Select an alliance first.</div>`
+    return
+  }
+
   if (filteredUsers.length === 0) {
     const emptyMessage = registeredCount === 0 ? "No registered members yet." : "No matching member."
     el.giftTargetsList.innerHTML = `<div class="empty">${emptyMessage}</div>`
@@ -1159,6 +1289,8 @@ function renderGiftCodes() {
     return
   }
 
+  renderAllianceSelector()
+
   const queueRunning = state.giftQueueRunning
   if (el.giftCodeInput) {
     el.giftCodeInput.disabled = queueRunning
@@ -1246,11 +1378,19 @@ function renderRegisteredUsers() {
     return
   }
 
+  const currentAllianceName = getCurrentAllianceName("")
   if (el.registeredTitle) {
-    el.registeredTitle.textContent = `Registered Members (${state.users.length})`
+    el.registeredTitle.textContent = currentAllianceName
+      ? `Registered Members · ${currentAllianceName} (${state.users.length})`
+      : `Registered Members (${state.users.length})`
   }
 
   el.registeredUsers.innerHTML = ""
+
+  if (!state.currentAllianceId) {
+    el.registeredUsers.innerHTML = `<div class="empty">Select an alliance first.</div>`
+    return
+  }
 
   if (state.users.length === 0) {
     el.registeredUsers.innerHTML = `<div class="empty">No registered members yet.</div>`
@@ -1373,6 +1513,36 @@ function renderRegisteredUsers() {
       const actions = document.createElement("div")
       actions.className = "user-row-actions"
 
+      let currentAllianceId = Number(user?.alliance_id)
+      const allianceSelect = document.createElement("select")
+      allianceSelect.className = "alliance-select"
+      for (const alliance of Array.isArray(state.alliances) ? state.alliances : []) {
+        const option = document.createElement("option")
+        option.value = String(alliance.id)
+        option.textContent = safeText(alliance.name, `Alliance ${alliance.id}`)
+        allianceSelect.appendChild(option)
+      }
+      if (Number.isInteger(currentAllianceId) && currentAllianceId > 0) {
+        allianceSelect.value = String(currentAllianceId)
+      }
+      allianceSelect.addEventListener("change", async () => {
+        const nextAllianceId = Number(allianceSelect.value)
+        if (!Number.isInteger(nextAllianceId) || nextAllianceId <= 0 || nextAllianceId === currentAllianceId) {
+          return
+        }
+
+        allianceSelect.disabled = true
+        const updated = await onUpdateUserAlliance(user.fid, nextAllianceId)
+        allianceSelect.disabled = false
+
+        if (!updated) {
+          allianceSelect.value = String(currentAllianceId)
+          return
+        }
+
+        currentAllianceId = nextAllianceId
+      })
+
       let currentRank = getMemberAllianceRank(user)
       const rankSelect = document.createElement("select")
       rankSelect.className = "rank-select"
@@ -1419,6 +1589,7 @@ function renderRegisteredUsers() {
         }
       })
 
+      actions.appendChild(allianceSelect)
       actions.appendChild(rankSelect)
       actions.appendChild(removeBtn)
       row.appendChild(main)
@@ -1438,10 +1609,22 @@ function renderEventSelector() {
 
   el.eventSelect.innerHTML = ""
 
+  if (!state.currentAllianceId) {
+    const option = document.createElement("option")
+    option.value = ""
+    option.textContent = "Select an alliance first"
+    el.eventSelect.appendChild(option)
+    el.eventSelect.disabled = true
+    el.deleteEventBtn.disabled = true
+    el.clearLegion1Btn.disabled = true
+    el.clearLegion2Btn.disabled = true
+    return
+  }
+
   if (state.events.length === 0) {
     const option = document.createElement("option")
     option.value = ""
-    option.textContent = "No events yet"
+    option.textContent = `No events for ${getCurrentAllianceName("this alliance")}`
     el.eventSelect.appendChild(option)
     el.eventSelect.disabled = true
     el.deleteEventBtn.disabled = true
@@ -1548,9 +1731,29 @@ function renderBoard() {
     return
   }
 
+  if (!state.currentAllianceId) {
+    el.boardTitle.textContent = "No alliance selected"
+    el.boardMeta.textContent = "Select or create an alliance first."
+    el.countUnassigned.textContent = "0"
+    el.countLegion1.textContent = "0"
+    el.countLegion2.textContent = "0"
+
+    if (el.copyLegion1Btn) {
+      el.copyLegion1Btn.disabled = true
+    }
+    if (el.copyLegion2Btn) {
+      el.copyLegion2Btn.disabled = true
+    }
+
+    fillColumn(el.unassignedList, [], "unassigned")
+    fillColumn(el.legion1List, [], "legion1")
+    fillColumn(el.legion2List, [], "legion2")
+    return
+  }
+
   if (!state.currentEventId || !state.board) {
     el.boardTitle.textContent = "No event selected"
-    el.boardMeta.textContent = "Create an event to start team assignment."
+    el.boardMeta.textContent = `Create an event for ${getCurrentAllianceName("this alliance")} to start team assignment.`
     el.countUnassigned.textContent = "0"
     el.countLegion1.textContent = "0"
     el.countLegion2.textContent = "0"
@@ -1569,7 +1772,7 @@ function renderBoard() {
   }
 
   el.boardTitle.textContent = state.board.event.name
-  el.boardMeta.textContent = `created at ${state.board.event.created_at}`
+  el.boardMeta.textContent = `${safeText(state.board.event.alliance_name, getCurrentAllianceName("Alliance"))} | created at ${state.board.event.created_at}`
 
   const searchTerms = getSearchTerms(state.boardSearch)
   const unassignedFiltered = filterMembersBySearch(state.board.unassigned, searchTerms)
@@ -1654,7 +1857,31 @@ async function onUpdateUserRank(fid, rank) {
   }
 }
 
+async function onUpdateUserAlliance(fid, allianceId) {
+  try {
+    await api(`/users/${fid}/alliance`, {
+      method: "POST",
+      body: { alliance_id: allianceId },
+    })
+    const allianceName = state.alliances.find((item) => item.id === allianceId)?.name || `Alliance ${allianceId}`
+    setStatus(`FID ${fid} moved to ${allianceName}.`, "success")
+    await refreshUsers()
+    await refreshEvents()
+    await refreshBoard()
+    return true
+  } catch (error) {
+    const message = safeText(error?.message, "request failed")
+    setStatus(message, "error")
+    return false
+  }
+}
+
 async function onAddSingle() {
+  const allianceId = requireCurrentAllianceId("add members")
+  if (!allianceId) {
+    return
+  }
+
   const fid = Number(el.singleFid?.value)
   if (!Number.isInteger(fid) || fid <= 0) {
     setStatus("Enter a valid FID.", "error")
@@ -1662,9 +1889,9 @@ async function onAddSingle() {
   }
 
   try {
-    await api("/users", { method: "POST", body: { fid } })
+    await api("/users", { method: "POST", body: { fid, alliance_id: allianceId } })
     el.singleFid.value = ""
-    setStatus(`User ${fid} added.`, "success")
+    setStatus(`User ${fid} added to ${getCurrentAllianceName("this alliance")}.`, "success")
     await refreshAll()
   } catch (error) {
     setStatus(error.message, "error")
@@ -1672,6 +1899,11 @@ async function onAddSingle() {
 }
 
 async function onAddBulk() {
+  const allianceId = requireCurrentAllianceId("bulk add members")
+  if (!allianceId) {
+    return
+  }
+
   const fids = parseFids(el.bulkFids?.value || "")
   if (fids.length === 0) {
     setStatus("Enter at least one valid FID.", "error")
@@ -1727,7 +1959,7 @@ async function onAddBulk() {
       })
 
       try {
-        const res = await api("/users", { method: "POST", body: { fid } })
+        const res = await api("/users", { method: "POST", body: { fid, alliance_id: allianceId } })
         const userStatus = res?.data?.status
         if (userStatus === "added") {
           totalAdded += 1
@@ -1836,6 +2068,10 @@ function normalizeGiftTargets(targetUsers) {
 }
 
 async function runGiftApplyQueue(targetUsers, sourceLabel) {
+  if (!requireCurrentAllianceId("apply gift codes")) {
+    return
+  }
+
   if (state.giftQueueRunning) {
     setStatus("Gift queue is already running.", "error")
     return
@@ -2083,7 +2319,70 @@ async function onDeleteGiftCode(giftCodeId, code) {
   }
 }
 
+async function onCreateAlliance() {
+  const rawName = window.prompt("Alliance name")
+  if (rawName === null) {
+    return
+  }
+
+  const name = rawName.trim()
+  if (!name) {
+    setStatus("Enter an alliance name.", "error")
+    return
+  }
+
+  try {
+    const res = await api("/alliances", {
+      method: "POST",
+      body: { name },
+    })
+    const allianceId = Number(res?.data?.alliance?.id)
+    if (Number.isInteger(allianceId) && allianceId > 0) {
+      state.currentAllianceId = allianceId
+    }
+
+    await refreshAll()
+
+    const status = safeText(res?.data?.status, "added")
+    const savedName = safeText(res?.data?.alliance?.name, name)
+    if (status === "exists") {
+      setStatus(`Alliance ${savedName} already exists. Switched to it.`, "info")
+      return
+    }
+
+    setStatus(`Alliance ${savedName} added.`, "success")
+  } catch (error) {
+    setStatus(error.message, "error")
+  }
+}
+
+async function onChangeAlliance(nextAllianceId) {
+  const value = Number(nextAllianceId)
+  if (!Number.isInteger(value) || value <= 0 || value === state.currentAllianceId) {
+    return
+  }
+
+  state.currentAllianceId = value
+  state.currentEventId = null
+  trimGiftSelections()
+  renderAllianceSelector()
+
+  try {
+    await refreshUsers()
+    await refreshEvents()
+    await refreshBoard()
+    setStatus(`Alliance changed to ${getCurrentAllianceName("selected alliance")}.`, "info")
+  } catch (error) {
+    setStatus(error.message, "error")
+  }
+}
+
 async function onCreateEvent() {
+  const allianceId = requireCurrentAllianceId("create an event")
+  if (!allianceId) {
+    return
+  }
+
   const name = (el.eventNameInput?.value || "").trim()
   if (!name) {
     setStatus("Enter an event name.", "error")
@@ -2091,7 +2390,7 @@ async function onCreateEvent() {
   }
 
   try {
-    const res = await api("/events", { method: "POST", body: { name } })
+    const res = await api("/events", { method: "POST", body: { name, alliance_id: allianceId } })
     el.eventNameInput.value = ""
     setEventModalOpen(false)
     state.currentEventId = res.data.id
@@ -2155,6 +2454,7 @@ function bindEvents() {
   el.viewRegisteredBtn?.addEventListener("click", () => setMainView("registered"))
   el.viewShowdownBtn?.addEventListener("click", () => setMainView("showdown"))
   el.viewGiftCodesBtn?.addEventListener("click", () => setMainView("gift-codes"))
+  el.addAllianceBtn?.addEventListener("click", onCreateAlliance)
   el.addSingleBtn?.addEventListener("click", onAddSingle)
   el.addBulkBtn?.addEventListener("click", onAddBulk)
   el.addGiftCodeBtn?.addEventListener("click", onAddGiftCode)
@@ -2445,5 +2745,3 @@ async function init() {
 }
 
 init()
-
-

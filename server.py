@@ -7,15 +7,15 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from player_api import extract_player_data, fetch_gift_code, fetch_player
 
 LEGION_1 = "legion1"
 LEGION_2 = "legion2"
-LEGIONS = {LEGION_1, LEGION_2}
 ALLIANCE_RANKS = ("R5", "R4", "R3", "R2", "R1", "R0")
 BULK_USER_REQUEST_DELAY_SECONDS = 0.35
+DEFAULT_ALLIANCE_NAME = "Ace"
 
 
 def utc_now_iso() -> str:
@@ -100,6 +100,41 @@ def normalize_event_name(value: Any) -> str:
     return name
 
 
+def normalize_alliance_name(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError("alliance name must be a string")
+
+    name = " ".join(value.split())
+    if not name:
+        raise ValueError("alliance name cannot be empty")
+
+    if len(name) > 80:
+        raise ValueError("alliance name is too long")
+
+    return name
+
+
+def normalize_alliance_id(value: Any) -> int:
+    if isinstance(value, bool):
+        raise ValueError("alliance_id must be an integer")
+
+    try:
+        alliance_id = int(value)
+    except (TypeError, ValueError) as e:
+        raise ValueError("alliance_id must be an integer") from e
+
+    if alliance_id <= 0:
+        raise ValueError("alliance_id must be greater than 0")
+
+    return alliance_id
+
+
+def normalize_optional_alliance_id(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    return normalize_alliance_id(value)
+
+
 def normalize_gift_code(value: Any) -> str:
     if not isinstance(value, str):
         raise ValueError("code must be a string")
@@ -176,13 +211,97 @@ def db_connect(db_path: str) -> sqlite3.Connection:
     return conn
 
 
+def get_or_create_alliance_id_conn(conn: sqlite3.Connection, name: str) -> int:
+    normalized_name = normalize_alliance_name(name)
+    existing = conn.execute(
+        "SELECT id FROM alliances WHERE name = ?",
+        (normalized_name,),
+    ).fetchone()
+    if existing:
+        return int(existing["id"])
+
+    now = utc_now_iso()
+    cur = conn.execute(
+        """
+        INSERT INTO alliances (name, created_at, updated_at)
+        VALUES (?, ?, ?)
+        """,
+        (normalized_name, now, now),
+    )
+    return int(cur.lastrowid)
+
+
+def ensure_alliance_exists_conn(conn: sqlite3.Connection, alliance_id: int) -> int:
+    normalized_alliance_id = normalize_alliance_id(alliance_id)
+    row = conn.execute(
+        "SELECT id FROM alliances WHERE id = ?",
+        (normalized_alliance_id,),
+    ).fetchone()
+    if not row:
+        raise LookupError("alliance not found")
+    return int(row["id"])
+
+
+def migrate_alliances_table_case_sensitive_conn(conn: sqlite3.Connection) -> None:
+    row = conn.execute(
+        """
+        SELECT sql
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'alliances'
+        """
+    ).fetchone()
+
+    if not row:
+        return
+
+    create_sql = str(row["sql"] or "")
+    if "COLLATE NOCASE" not in create_sql.upper():
+        return
+
+    conn.execute("DROP TABLE IF EXISTS alliances__case_sensitive")
+    conn.execute(
+        """
+        CREATE TABLE alliances__case_sensitive (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO alliances__case_sensitive (id, name, created_at, updated_at)
+        SELECT id, name, created_at, updated_at
+        FROM alliances
+        ORDER BY id ASC
+        """
+    )
+    conn.execute("DROP TABLE alliances")
+    conn.execute("ALTER TABLE alliances__case_sensitive RENAME TO alliances")
+
+
 def init_db(db_path: str) -> None:
     with db_connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS alliances (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        migrate_alliances_table_case_sensitive_conn(conn)
+        default_alliance_id = get_or_create_alliance_id_conn(conn, DEFAULT_ALLIANCE_NAME)
+
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS users (
                 fid INTEGER PRIMARY KEY,
                 nickname TEXT,
+                alliance_id INTEGER NOT NULL,
                 kid INTEGER,
                 stove_lv INTEGER,
                 stove_lv_content INTEGER,
@@ -199,6 +318,7 @@ def init_db(db_path: str) -> None:
             CREATE TABLE IF NOT EXISTS events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
+                alliance_id INTEGER NOT NULL,
                 created_at TEXT NOT NULL
             )
             """
@@ -218,12 +338,19 @@ def init_db(db_path: str) -> None:
             """
         )
 
-        columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
-        if "alliance_rank" not in columns:
+        user_columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+        if "alliance_rank" not in user_columns:
             conn.execute(
                 """
                 ALTER TABLE users
                 ADD COLUMN alliance_rank TEXT NOT NULL DEFAULT 'R0'
+                """
+            )
+        if "alliance_id" not in user_columns:
+            conn.execute(
+                """
+                ALTER TABLE users
+                ADD COLUMN alliance_id INTEGER
                 """
             )
         conn.execute(
@@ -232,6 +359,31 @@ def init_db(db_path: str) -> None:
             SET alliance_rank = 'R0'
             WHERE alliance_rank IS NULL OR TRIM(alliance_rank) = ''
             """
+        )
+        conn.execute(
+            """
+            UPDATE users
+            SET alliance_id = ?
+            WHERE alliance_id IS NULL
+            """,
+            (default_alliance_id,),
+        )
+
+        event_columns = {row["name"] for row in conn.execute("PRAGMA table_info(events)").fetchall()}
+        if "alliance_id" not in event_columns:
+            conn.execute(
+                """
+                ALTER TABLE events
+                ADD COLUMN alliance_id INTEGER
+                """
+            )
+        conn.execute(
+            """
+            UPDATE events
+            SET alliance_id = ?
+            WHERE alliance_id IS NULL
+            """,
+            (default_alliance_id,),
         )
 
         conn.execute(
@@ -244,7 +396,71 @@ def init_db(db_path: str) -> None:
             )
             """
         )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_users_alliance_id ON users(alliance_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_events_alliance_id ON events(alliance_id)")
         conn.commit()
+
+
+def get_alliance(db_path: str, alliance_id: int) -> dict[str, Any] | None:
+    with db_connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT id, name, created_at, updated_at
+            FROM alliances
+            WHERE id = ?
+            """,
+            (normalize_alliance_id(alliance_id),),
+        ).fetchone()
+
+    return dict(row) if row else None
+
+
+def list_alliances(db_path: str) -> list[dict[str, Any]]:
+    with db_connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT id, name, created_at, updated_at
+            FROM alliances
+            ORDER BY name COLLATE NOCASE, id ASC
+            """
+        ).fetchall()
+
+    return [dict(row) for row in rows]
+
+
+def create_alliance(db_path: str, name: str) -> dict[str, Any]:
+    normalized_name = normalize_alliance_name(name)
+    now = utc_now_iso()
+
+    with db_connect(db_path) as conn:
+        existing = conn.execute(
+            "SELECT id FROM alliances WHERE name = ?",
+            (normalized_name,),
+        ).fetchone()
+
+        if existing:
+            alliance_id = int(existing["id"])
+            status = "exists"
+        else:
+            cur = conn.execute(
+                """
+                INSERT INTO alliances (name, created_at, updated_at)
+                VALUES (?, ?, ?)
+                """,
+                (normalized_name, now, now),
+            )
+            alliance_id = int(cur.lastrowid)
+            conn.commit()
+            status = "added"
+
+    saved = get_alliance(db_path, alliance_id)
+    if not saved:
+        raise RuntimeError("failed to save alliance")
+
+    return {
+        "status": status,
+        "alliance": saved,
+    }
 
 
 def get_user(db_path: str, fid: int) -> dict[str, Any] | None:
@@ -252,18 +468,21 @@ def get_user(db_path: str, fid: int) -> dict[str, Any] | None:
         row = conn.execute(
             """
             SELECT
-                fid,
-                nickname,
-                kid,
-                COALESCE(alliance_rank, 'R0') AS alliance_rank,
-                stove_lv,
-                stove_lv_content,
-                avatar_image,
-                total_recharge_amount,
-                created_at,
-                updated_at
-            FROM users
-            WHERE fid = ?
+                u.fid,
+                u.nickname,
+                u.alliance_id,
+                COALESCE(a.name, '') AS alliance_name,
+                u.kid,
+                COALESCE(u.alliance_rank, 'R0') AS alliance_rank,
+                u.stove_lv,
+                u.stove_lv_content,
+                u.avatar_image,
+                u.total_recharge_amount,
+                u.created_at,
+                u.updated_at
+            FROM users u
+            LEFT JOIN alliances a ON a.id = u.alliance_id
+            WHERE u.fid = ?
             """,
             (fid,),
         ).fetchone()
@@ -271,48 +490,87 @@ def get_user(db_path: str, fid: int) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
-def list_users(db_path: str) -> list[dict[str, Any]]:
+def list_users(db_path: str, alliance_id: int | None = None) -> list[dict[str, Any]]:
     with db_connect(db_path) as conn:
-        rows = conn.execute(
-            """
-            SELECT
-                fid,
-                nickname,
-                kid,
-                COALESCE(alliance_rank, 'R0') AS alliance_rank,
-                stove_lv,
-                stove_lv_content,
-                avatar_image,
-                total_recharge_amount,
-                created_at,
-                updated_at
-            FROM users
-            ORDER BY
-                CASE WHEN nickname IS NULL OR nickname = '' THEN 1 ELSE 0 END,
-                nickname COLLATE NOCASE,
-                fid ASC
-            """
-        ).fetchall()
+        if alliance_id is None:
+            rows = conn.execute(
+                """
+                SELECT
+                    u.fid,
+                    u.nickname,
+                    u.alliance_id,
+                    COALESCE(a.name, '') AS alliance_name,
+                    u.kid,
+                    COALESCE(u.alliance_rank, 'R0') AS alliance_rank,
+                    u.stove_lv,
+                    u.stove_lv_content,
+                    u.avatar_image,
+                    u.total_recharge_amount,
+                    u.created_at,
+                    u.updated_at
+                FROM users u
+                LEFT JOIN alliances a ON a.id = u.alliance_id
+                ORDER BY
+                    CASE WHEN u.nickname IS NULL OR u.nickname = '' THEN 1 ELSE 0 END,
+                    u.nickname COLLATE NOCASE,
+                    u.fid ASC
+                """
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT
+                    u.fid,
+                    u.nickname,
+                    u.alliance_id,
+                    COALESCE(a.name, '') AS alliance_name,
+                    u.kid,
+                    COALESCE(u.alliance_rank, 'R0') AS alliance_rank,
+                    u.stove_lv,
+                    u.stove_lv_content,
+                    u.avatar_image,
+                    u.total_recharge_amount,
+                    u.created_at,
+                    u.updated_at
+                FROM users u
+                LEFT JOIN alliances a ON a.id = u.alliance_id
+                WHERE u.alliance_id = ?
+                ORDER BY
+                    CASE WHEN u.nickname IS NULL OR u.nickname = '' THEN 1 ELSE 0 END,
+                    u.nickname COLLATE NOCASE,
+                    u.fid ASC
+                """,
+                (normalize_alliance_id(alliance_id),),
+            ).fetchall()
 
     return [dict(row) for row in rows]
 
 
-def upsert_user(db_path: str, user: dict[str, Any]) -> str:
+def upsert_user(db_path: str, user: dict[str, Any], alliance_id: int | None = None) -> str:
     fid = normalize_fid(user.get("fid"))
     now = utc_now_iso()
 
     with db_connect(db_path) as conn:
         existing = conn.execute(
-            "SELECT 1 FROM users WHERE fid = ?",
+            "SELECT alliance_id FROM users WHERE fid = ?",
             (fid,),
         ).fetchone()
         status = "updated" if existing else "added"
+
+        if alliance_id is None:
+            if existing and existing["alliance_id"] is not None:
+                resolved_alliance_id = normalize_alliance_id(existing["alliance_id"])
+            else:
+                resolved_alliance_id = get_or_create_alliance_id_conn(conn, DEFAULT_ALLIANCE_NAME)
+        else:
+            resolved_alliance_id = ensure_alliance_exists_conn(conn, alliance_id)
 
         conn.execute(
             """
             INSERT INTO users (
                 fid,
                 nickname,
+                alliance_id,
                 kid,
                 stove_lv,
                 stove_lv_content,
@@ -321,9 +579,10 @@ def upsert_user(db_path: str, user: dict[str, Any]) -> str:
                 created_at,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(fid) DO UPDATE SET
                 nickname = excluded.nickname,
+                alliance_id = excluded.alliance_id,
                 kid = excluded.kid,
                 stove_lv = excluded.stove_lv,
                 stove_lv_content = excluded.stove_lv_content,
@@ -334,6 +593,7 @@ def upsert_user(db_path: str, user: dict[str, Any]) -> str:
             (
                 fid,
                 user.get("nickname"),
+                resolved_alliance_id,
                 user.get("kid"),
                 user.get("stove_lv"),
                 user.get("stove_lv_content"),
@@ -365,15 +625,26 @@ def delete_users(db_path: str, fids: list[int]) -> list[int]:
     return deleted
 
 
-def list_user_fids(db_path: str) -> list[int]:
+def list_user_fids(db_path: str, alliance_id: int | None = None) -> list[int]:
     with db_connect(db_path) as conn:
-        rows = conn.execute(
-            """
-            SELECT fid
-            FROM users
-            ORDER BY fid ASC
-            """
-        ).fetchall()
+        if alliance_id is None:
+            rows = conn.execute(
+                """
+                SELECT fid
+                FROM users
+                ORDER BY fid ASC
+                """
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT fid
+                FROM users
+                WHERE alliance_id = ?
+                ORDER BY fid ASC
+                """,
+                (normalize_alliance_id(alliance_id),),
+            ).fetchall()
 
     return [normalize_fid(row["fid"]) for row in rows]
 
@@ -438,7 +709,47 @@ def update_user_rank(db_path: str, fid: int, rank: str) -> dict[str, Any]:
     return updated_user
 
 
-def fetch_and_save_user(db_path: str, fid: int) -> dict[str, Any]:
+def update_user_alliance(db_path: str, fid: int, alliance_id: int) -> dict[str, Any]:
+    normalized_fid = normalize_fid(fid)
+    normalized_alliance_id = normalize_alliance_id(alliance_id)
+    now = utc_now_iso()
+
+    with db_connect(db_path) as conn:
+        user_row = conn.execute("SELECT 1 FROM users WHERE fid = ?", (normalized_fid,)).fetchone()
+        if not user_row:
+            raise LookupError("user not found")
+
+        ensure_alliance_exists_conn(conn, normalized_alliance_id)
+
+        conn.execute(
+            """
+            UPDATE users
+            SET alliance_id = ?, updated_at = ?
+            WHERE fid = ?
+            """,
+            (normalized_alliance_id, now, normalized_fid),
+        )
+        conn.execute(
+            """
+            DELETE FROM event_members
+            WHERE fid = ?
+              AND event_id IN (
+                SELECT id
+                FROM events
+                WHERE alliance_id != ?
+              )
+            """,
+            (normalized_fid, normalized_alliance_id),
+        )
+        conn.commit()
+
+    updated_user = get_user(db_path, normalized_fid)
+    if not updated_user:
+        raise LookupError("user not found")
+    return updated_user
+
+
+def fetch_and_save_user(db_path: str, fid: int, alliance_id: int | None = None) -> dict[str, Any]:
     try:
         result = fetch_player(fid)
     except RuntimeError as e:
@@ -482,8 +793,8 @@ def fetch_and_save_user(db_path: str, fid: int) -> dict[str, Any]:
     }
 
     try:
-        status = upsert_user(db_path, normalized_user)
-    except ValueError as e:
+        status = upsert_user(db_path, normalized_user, alliance_id=alliance_id)
+    except (LookupError, ValueError) as e:
         return {
             "fid": fid,
             "status": "error",
@@ -604,7 +915,17 @@ def redeem_gift_code(fid: int, cdk: str, captcha_code: str) -> dict[str, Any]:
 def get_event(db_path: str, event_id: int) -> dict[str, Any] | None:
     with db_connect(db_path) as conn:
         row = conn.execute(
-            "SELECT id, name, created_at FROM events WHERE id = ?",
+            """
+            SELECT
+                e.id,
+                e.name,
+                e.alliance_id,
+                COALESCE(a.name, '') AS alliance_name,
+                e.created_at
+            FROM events e
+            LEFT JOIN alliances a ON a.id = e.alliance_id
+            WHERE e.id = ?
+            """,
             (event_id,),
         ).fetchone()
 
@@ -685,13 +1006,15 @@ def delete_gift_code(db_path: str, gift_code_id: int) -> bool:
     return cur.rowcount > 0
 
 
-def create_event(db_path: str, name: str) -> dict[str, Any]:
+def create_event(db_path: str, name: str, alliance_id: int) -> dict[str, Any]:
     now = utc_now_iso()
+    normalized_alliance_id = normalize_alliance_id(alliance_id)
 
     with db_connect(db_path) as conn:
+        ensure_alliance_exists_conn(conn, normalized_alliance_id)
         cur = conn.execute(
-            "INSERT INTO events (name, created_at) VALUES (?, ?)",
-            (name, now),
+            "INSERT INTO events (name, alliance_id, created_at) VALUES (?, ?, ?)",
+            (name, normalized_alliance_id, now),
         )
         event_id = cur.lastrowid
         conn.commit()
@@ -703,22 +1026,46 @@ def create_event(db_path: str, name: str) -> dict[str, Any]:
     return event
 
 
-def list_events(db_path: str) -> list[dict[str, Any]]:
+def list_events(db_path: str, alliance_id: int | None = None) -> list[dict[str, Any]]:
     with db_connect(db_path) as conn:
-        rows = conn.execute(
-            """
-            SELECT
-                e.id,
-                e.name,
-                e.created_at,
-                SUM(CASE WHEN em.legion = 'legion1' THEN 1 ELSE 0 END) AS legion1_count,
-                SUM(CASE WHEN em.legion = 'legion2' THEN 1 ELSE 0 END) AS legion2_count
-            FROM events e
-            LEFT JOIN event_members em ON em.event_id = e.id
-            GROUP BY e.id, e.name, e.created_at
-            ORDER BY e.id DESC
-            """
-        ).fetchall()
+        if alliance_id is None:
+            rows = conn.execute(
+                """
+                SELECT
+                    e.id,
+                    e.name,
+                    e.alliance_id,
+                    COALESCE(a.name, '') AS alliance_name,
+                    e.created_at,
+                    SUM(CASE WHEN em.legion = 'legion1' THEN 1 ELSE 0 END) AS legion1_count,
+                    SUM(CASE WHEN em.legion = 'legion2' THEN 1 ELSE 0 END) AS legion2_count
+                FROM events e
+                LEFT JOIN alliances a ON a.id = e.alliance_id
+                LEFT JOIN event_members em ON em.event_id = e.id
+                GROUP BY e.id, e.name, e.alliance_id, a.name, e.created_at
+                ORDER BY e.id DESC
+                """
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT
+                    e.id,
+                    e.name,
+                    e.alliance_id,
+                    COALESCE(a.name, '') AS alliance_name,
+                    e.created_at,
+                    SUM(CASE WHEN em.legion = 'legion1' THEN 1 ELSE 0 END) AS legion1_count,
+                    SUM(CASE WHEN em.legion = 'legion2' THEN 1 ELSE 0 END) AS legion2_count
+                FROM events e
+                LEFT JOIN alliances a ON a.id = e.alliance_id
+                LEFT JOIN event_members em ON em.event_id = e.id
+                WHERE e.alliance_id = ?
+                GROUP BY e.id, e.name, e.alliance_id, a.name, e.created_at
+                ORDER BY e.id DESC
+                """,
+                (normalize_alliance_id(alliance_id),),
+            ).fetchall()
 
     return [dict(row) for row in rows]
 
@@ -735,13 +1082,18 @@ def assign_user_to_event_legion(db_path: str, event_id: int, fid: int, legion: s
     assigned_at = utc_now_iso()
 
     with db_connect(db_path) as conn:
-        event_row = conn.execute("SELECT 1 FROM events WHERE id = ?", (event_id,)).fetchone()
+        event_row = conn.execute("SELECT alliance_id FROM events WHERE id = ?", (event_id,)).fetchone()
         if not event_row:
             raise LookupError("event not found")
 
-        user_row = conn.execute("SELECT 1 FROM users WHERE fid = ?", (fid,)).fetchone()
+        user_row = conn.execute("SELECT alliance_id FROM users WHERE fid = ?", (fid,)).fetchone()
         if not user_row:
             raise LookupError("user not found")
+
+        event_alliance_id = normalize_alliance_id(event_row["alliance_id"])
+        user_alliance_id = normalize_alliance_id(user_row["alliance_id"])
+        if user_alliance_id != event_alliance_id:
+            raise ValueError("user belongs to a different alliance")
 
         existing = conn.execute(
             "SELECT legion FROM event_members WHERE event_id = ? AND fid = ?",
@@ -810,6 +1162,8 @@ def list_event_legion_members(db_path: str, event_id: int, legion: str) -> list[
             SELECT
                 u.fid,
                 u.nickname,
+                u.alliance_id,
+                COALESCE(a.name, '') AS alliance_name,
                 u.kid,
                 COALESCE(u.alliance_rank, 'R0') AS alliance_rank,
                 u.stove_lv,
@@ -820,7 +1174,9 @@ def list_event_legion_members(db_path: str, event_id: int, legion: str) -> list[
                 em.legion
             FROM event_members em
             JOIN users u ON u.fid = em.fid
-            WHERE em.event_id = ? AND em.legion = ?
+            JOIN events e ON e.id = em.event_id
+            LEFT JOIN alliances a ON a.id = u.alliance_id
+            WHERE em.event_id = ? AND em.legion = ? AND u.alliance_id = e.alliance_id
             ORDER BY
                 CASE WHEN u.nickname IS NULL OR u.nickname = '' THEN 1 ELSE 0 END,
                 u.nickname COLLATE NOCASE,
@@ -832,13 +1188,15 @@ def list_event_legion_members(db_path: str, event_id: int, legion: str) -> list[
     return [dict(row) for row in rows]
 
 
-def list_event_unassigned_users(db_path: str, event_id: int) -> list[dict[str, Any]]:
+def list_event_unassigned_users(db_path: str, event_id: int, alliance_id: int) -> list[dict[str, Any]]:
     with db_connect(db_path) as conn:
         rows = conn.execute(
             """
             SELECT
                 u.fid,
                 u.nickname,
+                u.alliance_id,
+                COALESCE(a.name, '') AS alliance_name,
                 u.kid,
                 COALESCE(u.alliance_rank, 'R0') AS alliance_rank,
                 u.stove_lv,
@@ -848,16 +1206,18 @@ def list_event_unassigned_users(db_path: str, event_id: int) -> list[dict[str, A
                 u.created_at,
                 u.updated_at
             FROM users u
+            LEFT JOIN alliances a ON a.id = u.alliance_id
             LEFT JOIN event_members em
                 ON em.fid = u.fid
                 AND em.event_id = ?
             WHERE em.fid IS NULL
+              AND u.alliance_id = ?
             ORDER BY
                 CASE WHEN u.nickname IS NULL OR u.nickname = '' THEN 1 ELSE 0 END,
                 u.nickname COLLATE NOCASE,
                 u.fid ASC
             """,
-            (event_id,),
+            (event_id, normalize_alliance_id(alliance_id)),
         ).fetchall()
 
     return [dict(row) for row in rows]
@@ -868,9 +1228,10 @@ def get_event_board(db_path: str, event_id: int) -> dict[str, Any] | None:
     if not event:
         return None
 
+    event_alliance_id = normalize_alliance_id(event["alliance_id"])
     legion1 = list_event_legion_members(db_path, event_id, LEGION_1)
     legion2 = list_event_legion_members(db_path, event_id, LEGION_2)
-    unassigned = list_event_unassigned_users(db_path, event_id)
+    unassigned = list_event_unassigned_users(db_path, event_id, event_alliance_id)
 
     return {
         "event": event,
@@ -924,6 +1285,15 @@ class AllianceHandler(BaseHTTPRequestHandler):
     def _path_parts(self) -> list[str]:
         path = self._normalized_path()
         return [part for part in path.split("/") if part]
+
+    def _query_param(self, name: str) -> str | None:
+        query = parse_qs(urlparse(self.path).query)
+        values = query.get(name)
+        if not values:
+            return None
+
+        value = values[-1]
+        return value if value != "" else None
 
     def _read_json_body(self) -> dict[str, Any]:
         raw_len = self.headers.get("Content-Length", "0")
@@ -990,8 +1360,27 @@ class AllianceHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"code": 0, "msg": "ok"})
             return
 
+        if path == "/alliances":
+            alliances = list_alliances(self.db_path)
+            self._send_json(
+                200,
+                {
+                    "code": 0,
+                    "msg": "success",
+                    "count": len(alliances),
+                    "data": alliances,
+                },
+            )
+            return
+
         if path == "/users":
-            users = list_users(self.db_path)
+            try:
+                alliance_id = normalize_optional_alliance_id(self._query_param("alliance_id"))
+            except ValueError as e:
+                self._send_json(400, {"code": 1, "msg": str(e)})
+                return
+
+            users = list_users(self.db_path, alliance_id=alliance_id)
             self._send_json(
                 200,
                 {
@@ -1004,7 +1393,13 @@ class AllianceHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/events":
-            events = list_events(self.db_path)
+            try:
+                alliance_id = normalize_optional_alliance_id(self._query_param("alliance_id"))
+            except ValueError as e:
+                self._send_json(400, {"code": 1, "msg": str(e)})
+                return
+
+            events = list_events(self.db_path, alliance_id=alliance_id)
             self._send_json(
                 200,
                 {
@@ -1059,11 +1454,12 @@ class AllianceHandler(BaseHTTPRequestHandler):
         if path == "/users":
             try:
                 fid = normalize_fid(body.get("fid"))
+                alliance_id = normalize_optional_alliance_id(body.get("alliance_id"))
             except ValueError as e:
                 self._send_json(400, {"code": 1, "msg": str(e)})
                 return
 
-            result = fetch_and_save_user(self.db_path, fid)
+            result = fetch_and_save_user(self.db_path, fid, alliance_id=alliance_id)
             status_code = 200 if result.get("status") != "error" else 400
             payload = {
                 "code": 0 if status_code == 200 else 1,
@@ -1071,6 +1467,22 @@ class AllianceHandler(BaseHTTPRequestHandler):
                 "data": result,
             }
             self._send_json(status_code, payload)
+            return
+
+        if path == "/alliances":
+            try:
+                name = normalize_alliance_name(body.get("name"))
+            except ValueError as e:
+                self._send_json(400, {"code": 1, "msg": str(e)})
+                return
+
+            try:
+                result = create_alliance(self.db_path, name)
+            except RuntimeError as e:
+                self._send_json(500, {"code": 1, "msg": str(e)})
+                return
+
+            self._send_json(200, {"code": 0, "msg": "success", "data": result})
             return
 
         if len(parts) == 3 and parts[0] == "users" and parts[2] == "rank":
@@ -1101,6 +1513,34 @@ class AllianceHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if len(parts) == 3 and parts[0] == "users" and parts[2] == "alliance":
+            try:
+                fid = normalize_fid(parts[1])
+                alliance_id = normalize_alliance_id(body.get("alliance_id"))
+            except ValueError as e:
+                self._send_json(400, {"code": 1, "msg": str(e)})
+                return
+
+            try:
+                updated_user = update_user_alliance(self.db_path, fid, alliance_id)
+            except LookupError as e:
+                self._send_json(404, {"code": 1, "msg": str(e)})
+                return
+
+            self._send_json(
+                200,
+                {
+                    "code": 0,
+                    "msg": "success",
+                    "data": {
+                        "fid": fid,
+                        "alliance_id": alliance_id,
+                        "user": updated_user,
+                    },
+                },
+            )
+            return
+
         if path == "/users/refresh":
             try:
                 raw_fids = body.get("fids", None)
@@ -1116,13 +1556,14 @@ class AllianceHandler(BaseHTTPRequestHandler):
         if path == "/users/bulk":
             try:
                 fids = normalize_fids(body.get("fids"))
+                alliance_id = normalize_optional_alliance_id(body.get("alliance_id"))
             except ValueError as e:
                 self._send_json(400, {"code": 1, "msg": str(e)})
                 return
 
             results: list[dict[str, Any]] = []
             for idx, fid in enumerate(fids):
-                results.append(fetch_and_save_user(self.db_path, fid))
+                results.append(fetch_and_save_user(self.db_path, fid, alliance_id=alliance_id))
                 if idx < len(fids) - 1:
                     # External API applies rate limits; short spacing helps avoid 429 bursts.
                     time.sleep(BULK_USER_REQUEST_DELAY_SECONDS)
@@ -1174,11 +1615,16 @@ class AllianceHandler(BaseHTTPRequestHandler):
         if path == "/events":
             try:
                 name = normalize_event_name(body.get("name"))
+                alliance_id = normalize_alliance_id(body.get("alliance_id"))
             except ValueError as e:
                 self._send_json(400, {"code": 1, "msg": str(e)})
                 return
 
-            event = create_event(self.db_path, name)
+            try:
+                event = create_event(self.db_path, name, alliance_id)
+            except LookupError as e:
+                self._send_json(404, {"code": 1, "msg": str(e)})
+                return
             self._send_json(200, {"code": 0, "msg": "success", "data": event})
             return
 
@@ -1234,6 +1680,9 @@ class AllianceHandler(BaseHTTPRequestHandler):
             except LookupError as e:
                 self._send_json(404, {"code": 1, "msg": str(e)})
                 return
+            except ValueError as e:
+                self._send_json(400, {"code": 1, "msg": str(e)})
+                return
 
             self._send_json(200, {"code": 0, "msg": "success", "data": result})
             return
@@ -1253,7 +1702,7 @@ class AllianceHandler(BaseHTTPRequestHandler):
             for fid in fids:
                 try:
                     results.append(assign_user_to_event_legion(self.db_path, event_id, fid, legion))
-                except LookupError as e:
+                except (LookupError, ValueError) as e:
                     failed += 1
                     results.append({"fid": fid, "status": "error", "message": str(e)})
 

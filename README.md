@@ -2,7 +2,7 @@
 
 Kingshot Swordland Showdown manager.
 
-Web + API tool to manage alliance members and split them into Legion 1 / Legion 2 for recurring Swordland Showdown events.
+Web + API tool to manage multiple alliances, register members per alliance, and split each alliance into Legion 1 / Legion 2 for recurring Swordland Showdown events.
 
 ## Run
 
@@ -20,25 +20,34 @@ Default DB file:
 
 ## Main Workflow
 
-1. Register members by FID (single or bulk).
-2. Create a new event.
-3. Move members into Legion 1 or Legion 2.
-4. Repeat for each new event cycle.
+1. Create or select an alliance.
+2. Register members by FID (single or bulk) inside that alliance.
+3. Create a new event for that alliance.
+4. Move members into Legion 1 or Legion 2.
+5. Repeat for each new event cycle.
 
 ## API Summary
+
+### Alliances
+
+- `GET /alliances`
+- `POST /alliances` body: `{ "name": "ACE" }`
 
 ### Users
 
 - `GET /users`
-- `POST /users` body: `{ "fid": 254813172 }`
-- `POST /users/bulk` body: `{ "fids": [254813172, 111111111] }`
+- `GET /users?alliance_id=1`
+- `POST /users` body: `{ "fid": 254813172, "alliance_id": 1 }`
+- `POST /users/bulk` body: `{ "fids": [254813172, 111111111], "alliance_id": 1 }`
 - `DELETE /users/{fid}`
 - `POST /users/delete-bulk` body: `{ "fids": [254813172, 111111111] }`
+- `POST /users/{fid}/alliance` body: `{ "alliance_id": 2 }`
 
 ### Events
 
 - `GET /events`
-- `POST /events` body: `{ "name": "Swordland Showdown #1" }`
+- `GET /events?alliance_id=1`
+- `POST /events` body: `{ "name": "Swordland Showdown #1", "alliance_id": 1 }`
 - `DELETE /events/{event_id}`
 - `GET /events/{event_id}/board`
 - `POST /events/{event_id}/assign` body: `{ "fid": 254813172, "legion": "legion1" }`

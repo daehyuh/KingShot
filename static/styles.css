@@ -58,6 +58,75 @@ body {
   margin-bottom: 16px;
 }
 
+.alliance-toolbar {
+  margin-bottom: 12px;
+}
+
+.alliance-head {
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+
+.alliance-head .btn {
+  white-space: nowrap;
+}
+
+.alliance-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 160px));
+  gap: 12px;
+  margin-top: 14px;
+  justify-content: start;
+}
+
+.alliance-card {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  border: 1px solid #3c5f93;
+  border-radius: 18px;
+  padding: 14px;
+  background: linear-gradient(180deg, rgba(28, 54, 94, 0.9), rgba(12, 22, 44, 0.96));
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: flex-start;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 120ms ease, border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
+}
+
+.alliance-card:hover {
+  transform: translateY(-2px);
+  border-color: #67bbff;
+  box-shadow: 0 14px 24px rgba(0, 0, 0, 0.28);
+}
+
+.alliance-card.active {
+  border-color: #4fd0ff;
+  background: linear-gradient(180deg, rgba(51, 160, 228, 0.95), rgba(26, 88, 143, 0.96));
+  box-shadow: 0 14px 28px rgba(27, 102, 160, 0.38);
+}
+
+.alliance-card-name {
+  width: 100%;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.05;
+  word-break: break-word;
+}
+
+.alliance-card-meta {
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.alliance-card.active .alliance-card-meta {
+  color: rgba(232, 240, 255, 0.85);
+}
+
 .eyebrow {
   margin: 0;
   color: var(--accent);
